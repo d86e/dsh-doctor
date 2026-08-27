@@ -70,7 +70,7 @@ const execFile = promisify(execFileCb)
 const require = createRequire(import.meta.url)
 
 export const name = 'dsh-doctor'
-export const inject = ['tools']
+export const inject = ['tools', 'agents']
 
 /** Snapshot of the resolved @deepseek-ai/dsh-tools version. Exposed for tests. */
 export function resolvedDshToolsVersion(): string {
