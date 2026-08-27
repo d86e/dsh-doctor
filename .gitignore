@@ -1,0 +1,36 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Build output
+lib/
+*.tsbuildinfo
+
+# Logs
+*.log
+logs/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Test artifacts
+coverage/
+.nyc_output/
+*.tgz
+
+# DSH runtime (in case someone runs `dsh plugin` from this dir)
+.dsh/
+
+# Environment
+.env
+.env.local
+.env.*.local

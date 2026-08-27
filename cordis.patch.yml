@@ -1,0 +1,17 @@
+# dsh-doctor bundle patch: mount the plugin as a composition row so the
+# eight dsh_doctor_* tools are available to every agent after the next
+# `dsh web` start. The watchdog itself is generated into $DSH_HOME/doctor
+# by `dsh_doctor_install` and runs as an independent platform service.
+- insert:
+    - id: dsh-doctor
+      name: '@d86e/dsh-doctor'
+      config:
+        healthIntervalMs: 30000
+        healthFailuresToRecover: 3
+        recoveryBudgetMs: 60000
+        logMaxBytes: 5242880
+        logBackups: 3
+        safeModeBundles:
+          - dsh-core
+        toolErrorCapture: true
+        toolErrorMaxQueue: 500
