@@ -5,7 +5,11 @@
 # It requires a real `dsh` install on PATH. It will:
 #   1. Create a temporary DSH_HOME.
 #   2. Build the plugin (if not already built).
-#   3. Run `dsh plugin --profile web add <tarball>`.
+#   3. Run `dsh plugin --profile web add <source>` — source can be:
+#        a. a local tarball path:   scripts/dsh-smoke.sh ./path/to/dsh-doctor.tgz
+#        b. a git URL:              scripts/dsh-smoke.sh https://github.com/d86e/dsh-doctor.git
+#        c. a git URL with ref:     scripts/dsh-smoke.sh https://github.com/d86e/dsh-doctor.git#v0.2.0
+#        d. (no arg) build a local tarball and use it.
 #   4. Verify the bundle manifest is registered.
 #   5. Start `dsh web` and probe /health.
 #   6. Tear everything down.
@@ -14,7 +18,7 @@
 set -euo pipefail
 
 PLUGIN_DIR="${PLUGIN_DIR:-$(cd "$(dirname "$0")/.." && pwd)}"
-TARBALL="${1:-}"
+SOURCE="${1:-}"
 SMOKE_TMP="$(mktemp -d -t dsh-doctor-smoke-XXXXXX)"
 export DSH_HOME="$SMOKE_TMP/.dsh"
 export DSH_WEB_PORT="${DSH_WEB_PORT:-13080}"
@@ -34,14 +38,19 @@ cd "$PLUGIN_DIR"
 echo "[smoke] building…"
 pnpm --silent run build
 
-# 2. Pack.
-echo "[smoke] packing…"
-TARBALL_PATH="$(pnpm --silent pack --pack-destination "$SMOKE_TMP" | tail -1)"
-echo "[smoke] tarball: $TARBALL_PATH"
+# 2. Resolve the install source.
+if [[ -n "$SOURCE" ]]; then
+  INSTALL_SOURCE="$SOURCE"
+else
+  echo "[smoke] packing…"
+  TARBALL_PATH="$(pnpm --silent pack --pack-destination "$SMOKE_TMP" | tail -1)"
+  echo "[smoke] tarball: $TARBALL_PATH"
+  INSTALL_SOURCE="$TARBALL_PATH"
+fi
 
 # 3. Install into the web profile.
-echo "[smoke] dsh plugin --profile web add $TARBALL_PATH"
-dsh plugin --profile web add "$TARBALL_PATH"
+echo "[smoke] dsh plugin --profile web add $INSTALL_SOURCE"
+dsh plugin --profile web add "$INSTALL_SOURCE"
 
 # 4. Verify the bundle manifest is wired into the profile.
 PROFILE_DIR="$DSH_HOME/profiles/web"

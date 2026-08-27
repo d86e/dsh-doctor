@@ -141,12 +141,29 @@ You do **not** want dsh-doctor if:
 
 ## Install
 
-### Option A — as a dsh plugin (recommended)
+### Option A — from git (recommended)
 
 ```bash
-dsh plugin add @d86e/dsh-doctor
-dsh plugin reload
+# Install into the web profile (the only profile dsh-doctor supports today)
+dsh plugin --profile web add https://github.com/d86e/dsh-doctor.git
+dsh plugin --profile web reload
 ```
+
+You can pin a version with a git ref:
+
+```bash
+# Pin a specific tag
+dsh plugin --profile web add https://github.com/d86e/dsh-doctor.git#v0.2.0
+
+# Or a branch
+dsh plugin --profile web add https://github.com/d86e/dsh-doctor.git#main
+```
+
+The doctor is published as a git repository rather than an npm package because
+DSH plugins are loaded as `cordis.patch.yml` composition rows by the host
+process — they never need to be `require()`'d from a node_modules tree.
+Git install keeps the version control simple: a `git pull && dsh plugin reload`
+is the entire upgrade story.
 
 This mounts the 12 `dsh_doctor_*` tools. To also enable the standalone watchdog (recommended):
 
@@ -162,7 +179,18 @@ The `install` tool:
 3. Starts the service.
 4. The service starts probing `127.0.0.1:3080/health` immediately.
 
-### Option B — dynamic (sandboxed one-off)
+### Option B — npm package
+
+If you prefer npm, the same source is also published as `@d86e/dsh-doctor`:
+
+```bash
+dsh plugin --profile web add @d86e/dsh-doctor
+```
+
+`dsh plugin add` accepts a git URL, a `<owner>/<repo>` shorthand, or an npm
+package name — they all end up in the same place.
+
+### Option C — dynamic (sandboxed one-off)
 
 Useful for a single session, no install. Ask any agent:
 
