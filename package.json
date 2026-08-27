@@ -21,11 +21,11 @@
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "prepare": "pnpm run build",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:dsh-smoke": "bash scripts/dsh-smoke.sh"
+    "test:dsh-smoke": "bash scripts/dsh-smoke.sh",
+    "prepublishOnly": "pnpm run typecheck && pnpm run test && pnpm run build"
   },
   "keywords": [
     "dsh",

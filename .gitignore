@@ -3,7 +3,10 @@ node_modules/
 .pnpm-store/
 
 # Build output
-lib/
+# We commit `lib/` so that `dsh plugin add <git-url>` does not need to run
+# the `prepare` script (which pnpm blocks by default for git-hosted
+# dependencies). Every release must run `pnpm run build` before `git push`.
+# `*.tsbuildinfo` is still per-developer.
 *.tsbuildinfo
 
 # Logs
