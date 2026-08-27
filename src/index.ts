@@ -65,6 +65,7 @@ import {
   type SessionState,
   type WatchConfig,
 } from './session-watch.js'
+import { maybeAutoInstall } from './auto-install.js'
 
 const execFile = promisify(execFileCb)
 const require = createRequire(import.meta.url)
@@ -207,6 +208,18 @@ export function apply(ctx: Context, config: ConfigT): void {
       void log.warn(`session watch failed to install: ${(e as Error).message}`)
       watch = null
     }
+  }
+
+  // Auto-install the standalone watchdog on first load. Fire-and-forget
+  // so a slow `launchctl` / `systemctl` call never blocks dsh boot.
+  // The dsh_doctor_install tool remains available for explicit re-runs
+  // and for dry-run / purge workflows.
+  if (cfg.autoInstall) {
+    void maybeAutoInstall(log, cfg).catch((e) => {
+      void log.warn(`auto-install check failed: ${(e as Error).message}`)
+    })
+  } else {
+    void log.info('auto-install disabled by config (autoInstall=false)')
   }
 
   // ---- dsh_doctor_install ----

@@ -42,6 +42,8 @@ export interface Config {
     watchContinueText: string;
     /** Idle-check tick interval. */
     watchTickIntervalMs: number;
+    /** Auto-install the watchdog on first plugin load (default true). */
+    autoInstall: boolean;
 }
 export declare const Config: unknown;
 /** The default-values snapshot, also useful for the CLI doctor at startup. */

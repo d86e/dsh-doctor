@@ -61,6 +61,8 @@ export interface Config {
   watchContinueText: string
   /** Idle-check tick interval. */
   watchTickIntervalMs: number
+  /** Auto-install the watchdog on first plugin load (default true). */
+  autoInstall: boolean
 }
 
 const Defaults: Config = {
@@ -78,6 +80,7 @@ const Defaults: Config = {
   watchMaxNudgesPerSession: 3,
   watchContinueText: '继续',
   watchTickIntervalMs: 30_000,
+  autoInstall: true,
 }
 
 /**
@@ -109,6 +112,7 @@ export const Config: unknown = z.object({
   watchMaxNudgesPerSession: (z.natural() as unknown as NaturalWithDefault).min(1).default(Defaults.watchMaxNudgesPerSession),
   watchContinueText: (z.string() as unknown as StringWithDefault).default(Defaults.watchContinueText),
   watchTickIntervalMs: (z.number() as unknown as NumberWithDefault).default(Defaults.watchTickIntervalMs),
+  autoInstall: (z.boolean() as unknown as BooleanWithDefault).default(Defaults.autoInstall),
 })
 
 /** The default-values snapshot, also useful for the CLI doctor at startup. */
@@ -151,5 +155,6 @@ export function resolveConfig(base: Config, env: NodeJS.ProcessEnv = process.env
       ? env.DSH_DOCTOR_WATCH_TEXT
       : base.watchContinueText,
     watchTickIntervalMs: num('DSH_DOCTOR_WATCH_TICK_MS', base.watchTickIntervalMs),
+    autoInstall: bool('DSH_DOCTOR_AUTO_INSTALL', base.autoInstall),
   }
 }

@@ -165,19 +165,57 @@ process — they never need to be `require()`'d from a node_modules tree.
 Git install keeps the version control simple: a `git pull && dsh plugin reload`
 is the entire upgrade story.
 
-This mounts the 12 `dsh_doctor_*` tools. To also enable the standalone watchdog (recommended):
+**That's the entire install story.** On the very first load, the doctor plugin
+automatically:
 
-```bash
-# Tell the dsh agent to use dsh_doctor_install
+1. Writes `~/.dsh/doctor/watchdog.js` (standalone dep-free Node).
+2. Writes the platform service spec (LaunchAgent on macOS, systemd user
+   unit on Linux, Task Scheduler XML on Windows).
+3. Registers and starts the service.
+4. The service immediately starts probing `http://127.0.0.1:3080/health`
+   every 30 s.
+
+The auto-install runs as a detached child process so a slow `launchctl`
+or `systemctl` call never blocks dsh boot. It is **idempotent** — every
+subsequent plugin load checks for the script + service + running pid, and
+does nothing if everything is already in place.
+
+The 12 `dsh_doctor_*` tools also register as soon as the plugin loads.
+You can call `dsh_doctor_status` from any agent to confirm:
+
+```text
+> dsh_doctor_status
+{
+  "installed": true,
+  "running": true,
+  "pid": 25632,
+  "platform": "darwin",
+  ...
+}
+```
+
+### Opting out of auto-install
+
+Set `autoInstall: false` in `cordis.patch.yml`:
+
+```yaml
+- insert:
+    - id: dsh-doctor
+      name: '@d86e/dsh-doctor'
+      config:
+        autoInstall: false
+```
+
+or the env var `DSH_DOCTOR_AUTO_INSTALL=0`. You can then install the
+watchdog manually through the model-facing `dsh_doctor_install` tool:
+
+```text
 > dsh_doctor_install
 ```
 
-The `install` tool:
-
-1. Writes `~/.dsh/doctor/watchdog.js` (standalone dep-free Node).
-2. Writes the platform service spec (LaunchAgent / systemd / Task Scheduler).
-3. Starts the service.
-4. The service starts probing `127.0.0.1:3080/health` immediately.
+`dsh_doctor_install` supports `dryRun: true` to preview the writes without
+actually registering the service, and a `purgeLogs: true` flag in
+`dsh_doctor_uninstall` to also delete `~/.dsh/doctor/logs/`.
 
 ### Option B — npm package
 
