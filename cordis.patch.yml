@@ -19,8 +19,8 @@
         toolErrorMaxQueue: 500
         # Live session watch (nudges stuck turns)
         watchEnabled: true
-        watchIdleThresholdMs: 600000       # 10 minutes
-        watchNudgeCooldownMs: 300000       # 5 minutes between nudges
+        watchIdleThresholdMs: 180000       # 3 minutes
+        watchNudgeCooldownMs: 120000       # 2 minutes between nudges
         watchMaxNudgesPerSession: 3
         watchContinueText: "继续"
         watchTickIntervalMs: 30000         # 30 s idle check

@@ -104,8 +104,8 @@ export interface WatchConfig {
 
 export const DEFAULT_WATCH_CONFIG: WatchConfig = {
   watchEnabled: true,
-  idleThresholdMs: 10 * 60 * 1000, // 10 minutes
-  nudgeCooldownMs: 5 * 60 * 1000, // 5 minutes between nudges
+  idleThresholdMs: 3 * 60 * 1000, // 3 minutes
+  nudgeCooldownMs: 2 * 60 * 1000, // 2 minutes between nudges
   maxNudgesPerSession: 3,
   continueText: '继续',
   tickIntervalMs: 30_000, // check every 30 s

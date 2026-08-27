@@ -1,10 +1,15 @@
 /**
  * Plugin configuration surfaced to the watchdog.
  *
- * `Config` is the default config object (not a Schemastery schema — cordis
- * expects a plain object, see the dsh plugin template). The runtime
- * applies defaults and partial-overrides per-field; `resolveConfig`
+ * `Config` is the **schemastery schema** that dsh's cordis loader
+ * (v4.x) reads through `plugin.Config["~standard"].validate(config)`.
+ * The runtime applies the schema's defaults; `resolveConfig` then
  * layers the `DSH_DOCTOR_*` env overrides on top of the snapshot.
+ *
+ * Why schemastery: cordis 4.0.1 calls `runtime.Config["~standard"].validate`
+ * on the raw user config; a plain object throws
+ * `Cannot read properties of undefined (reading 'validate')`. We need
+ * a real schema to mount at all.
  *
  * @module dsh-doctor/config
  */
@@ -38,11 +43,16 @@ export interface Config {
     /** Idle-check tick interval. */
     watchTickIntervalMs: number;
 }
-export declare const Config: Config;
+export declare const Config: unknown;
+/** The default-values snapshot, also useful for the CLI doctor at startup. */
+export declare const ConfigDefaults: Config;
 /**
  * Resolve the watchdog's effective config at any moment, layering:
- *  1. The plugin's `Config` snapshot (read at install time).
- *  2. `DSH_DOCTOR_*` environment overrides (read at every watchdog tick).
+ *  1. The plugin's `Config` schema defaults (above).
+ *  2. The user-provided values from `cordis.patch.yml` (already
+ *     schemastery-validated and defaulted when dsh loaded us).
+ *  3. `DSH_DOCTOR_*` environment overrides (read at every watchdog
+ *     tick so operators can change knobs without an install).
  */
 export declare function resolveConfig(base: Config, env?: NodeJS.ProcessEnv): Config;
 //# sourceMappingURL=config.d.ts.map

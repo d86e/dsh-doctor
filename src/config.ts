@@ -1,13 +1,36 @@
 /**
  * Plugin configuration surfaced to the watchdog.
  *
- * `Config` is the default config object (not a Schemastery schema — cordis
- * expects a plain object, see the dsh plugin template). The runtime
- * applies defaults and partial-overrides per-field; `resolveConfig`
+ * `Config` is the **schemastery schema** that dsh's cordis loader
+ * (v4.x) reads through `plugin.Config["~standard"].validate(config)`.
+ * The runtime applies the schema's defaults; `resolveConfig` then
  * layers the `DSH_DOCTOR_*` env overrides on top of the snapshot.
+ *
+ * Why schemastery: cordis 4.0.1 calls `runtime.Config["~standard"].validate`
+ * on the raw user config; a plain object throws
+ * `Cannot read properties of undefined (reading 'validate')`. We need
+ * a real schema to mount at all.
  *
  * @module dsh-doctor/config
  */
+
+import { createRequire } from 'node:module'
+
+// Use createRequire to avoid bundler-time resolution differences.
+// The dsh host always provides @deepseek-ai/schemastery in the same
+// profile node_modules because every plugin in the dsh ecosystem depends
+// on it.
+const require = createRequire(import.meta.url)
+type Schemastery = {
+  object(shape: Record<string, unknown>): unknown
+  number(): unknown
+  natural(): { min(n: number): unknown }
+  boolean(): unknown
+  string(): unknown
+  array(inner: unknown): unknown
+  union(values: string[]): unknown
+}
+const z = require('@deepseek-ai/schemastery') as Schemastery
 
 export interface Config {
   /** Milliseconds between /health probes. */
@@ -40,7 +63,7 @@ export interface Config {
   watchTickIntervalMs: number
 }
 
-export const Config: Config = {
+const Defaults: Config = {
   healthIntervalMs: 30_000,
   healthFailuresToRecover: 3,
   recoveryBudgetMs: 60_000,
@@ -50,17 +73,54 @@ export const Config: Config = {
   toolErrorCapture: true,
   toolErrorMaxQueue: 500,
   watchEnabled: true,
-  watchIdleThresholdMs: 10 * 60 * 1000,
-  watchNudgeCooldownMs: 5 * 60 * 1000,
+  watchIdleThresholdMs: 3 * 60 * 1000, // 3 minutes (was 10 — too long for live sessions)
+  watchNudgeCooldownMs: 2 * 60 * 1000, // 2 minutes between nudges
   watchMaxNudgesPerSession: 3,
   watchContinueText: '继续',
   watchTickIntervalMs: 30_000,
 }
 
 /**
+ * The dsh-cordis schema. Exported as `Config` because cordis reads
+ * `plugin.Config` reflectively — the name is part of the contract.
+ *
+ * `~standard` is the symbol schemastery exposes for the standard-schema
+ * spec; cordis calls `Config["~standard"].validate(value)` to coerce
+ * the raw user config into a fully-defaulted `Config` object.
+ */
+type NaturalWithDefault = { default(n: number): unknown; min(n: number): NaturalWithDefault }
+type NumberWithDefault = { default(n: number): unknown }
+type BooleanWithDefault = { default(v: boolean): unknown }
+type StringWithDefault = { default(v: string): unknown }
+type ArrayWithDefault = { default(v: string[]): unknown }
+
+export const Config: unknown = z.object({
+  healthIntervalMs: (z.number() as unknown as NumberWithDefault).default(Defaults.healthIntervalMs),
+  healthFailuresToRecover: (z.natural() as unknown as NaturalWithDefault).min(1).default(Defaults.healthFailuresToRecover),
+  recoveryBudgetMs: (z.number() as unknown as NumberWithDefault).default(Defaults.recoveryBudgetMs),
+  logMaxBytes: (z.number() as unknown as NumberWithDefault).default(Defaults.logMaxBytes),
+  logBackups: (z.natural() as unknown as NaturalWithDefault).min(1).default(Defaults.logBackups),
+  safeModeBundles: (z.array(z.string()) as unknown as ArrayWithDefault).default(Defaults.safeModeBundles),
+  toolErrorCapture: (z.boolean() as unknown as BooleanWithDefault).default(Defaults.toolErrorCapture),
+  toolErrorMaxQueue: (z.natural() as unknown as NaturalWithDefault).min(1).default(Defaults.toolErrorMaxQueue),
+  watchEnabled: (z.boolean() as unknown as BooleanWithDefault).default(Defaults.watchEnabled),
+  watchIdleThresholdMs: (z.number() as unknown as NumberWithDefault).default(Defaults.watchIdleThresholdMs),
+  watchNudgeCooldownMs: (z.number() as unknown as NumberWithDefault).default(Defaults.watchNudgeCooldownMs),
+  watchMaxNudgesPerSession: (z.natural() as unknown as NaturalWithDefault).min(1).default(Defaults.watchMaxNudgesPerSession),
+  watchContinueText: (z.string() as unknown as StringWithDefault).default(Defaults.watchContinueText),
+  watchTickIntervalMs: (z.number() as unknown as NumberWithDefault).default(Defaults.watchTickIntervalMs),
+})
+
+/** The default-values snapshot, also useful for the CLI doctor at startup. */
+export const ConfigDefaults: Config = { ...Defaults }
+
+/**
  * Resolve the watchdog's effective config at any moment, layering:
- *  1. The plugin's `Config` snapshot (read at install time).
- *  2. `DSH_DOCTOR_*` environment overrides (read at every watchdog tick).
+ *  1. The plugin's `Config` schema defaults (above).
+ *  2. The user-provided values from `cordis.patch.yml` (already
+ *     schemastery-validated and defaulted when dsh loaded us).
+ *  3. `DSH_DOCTOR_*` environment overrides (read at every watchdog
+ *     tick so operators can change knobs without an install).
  */
 export function resolveConfig(base: Config, env: NodeJS.ProcessEnv = process.env): Config {
   const num = (k: string, fallback: number): number => {
