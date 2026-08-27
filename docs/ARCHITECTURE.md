@@ -1,189 +1,319 @@
 # Architecture
 
-This document expands on the README's overview. It is the canonical reference for the watchdog state machine, the triage decision tree, and the file layout under `$DSH_HOME/doctor/`.
+This document expands on the README's overview. It is the canonical reference for the watchdog state machine, the CLI doctor, the triage decision tree, the file layout under `$DSH_HOME/doctor/`, the in-process tool error capture, and the in-process session watch.
 
-## Scope (v0.1.0)
+## Scope (v0.2.0)
 
-`dsh-doctor` v0.1.0 covers three independent jobs:
+dsh-doctor v0.2.0 ships four independent jobs in one plugin:
 
-| Job | Time budget | What it does | Where it lives |
-| --- | --- | --- | --- |
-| **Web boot recovery** | 60 s hard cap | Health-probe `dsh web`, triage the boot log, disable the broken plugin row, restart. | Standalone `watchdog.js` running as a per-user platform service. |
-| **CLI doctor** | none | Same triage + recovery primitives, but invoked from a shell, runs to completion (or user Ctrl-C). | `src/cli/` (added in 0.1.0). |
-| **Tool error capture** | none (passive) | Subscribe to `tools/pre-execute` / `tools/execute`, classify the failure into transient / agent / business, record to log + memory queue. | In-process, in the plugin's `apply()`. |
+| Job | Where it runs | Time budget |
+| --- | --- | --- |
+| Web boot recovery | Standalone Node (`watchdog.js`) | 60 s ceiling per incident |
+| CLI doctor | `dsh doctor` in your shell | No budget — runs to completion |
+| Tool error capture | In-process, on the `tools/*` cordis events | Passive — never blocks the host |
+| Live session watch | In-process, on the `session/event` cordis event | Tick every 30 s, never blocks the host |
 
-Out of scope for 0.1.0 (planned for 0.2.0+ — see `ROADMAP.md` and the README):
+All four are observable independently through `dsh_doctor_status` and the 12 model-facing tools.
 
-- Active session watch (subscribe to `turn/end`, `host/agent-error`, inject a "继续" prompt) — requires `@deepseek-ai/dsh-agent` and `@deepseek-ai/dsh-settings` to be reachable from a plugin install, which pnpm currently isolates under `.pnpm/`.
-- Loop guard (same tool, same args, same result) — same dependency story.
-- Settings card UI — only available in the `web` profile runtime.
+## Components
 
-## State machine (watchdog)
+### 1. Plugin process — `apply(ctx, config)`
 
-```
-                    ┌──────────────────────────────────┐
-                    │  STATE_BOOTING                   │
-                    │  generate config, install marker │
-                    └────────────┬─────────────────────┘
-                                 │
-                                 ▼
-                    ┌──────────────────────────────────┐
-                    │  STATE_HEALTHY                   │◀──────┐
-                    │  tick: probe /health             │       │
-                    └────────────┬─────────────────────┘       │
-                                 │ (N consecutive failures)    │
-                                 ▼                              │
-                    ┌──────────────────────────────────┐       │
-                    │  STATE_TRIAGE                    │       │
-                    │  scan log → pick action plan     │       │
-                    └────────────┬─────────────────────┘       │
-                                 │                              │
-                  ┌──────────────┴───────────────┐              │
-                  ▼                              ▼              │
-      ┌──────────────────────┐      ┌──────────────────────┐   │
-      │  STATE_SIMPLE_FIX    │      │  STATE_COMPLEX_FIX   │   │
-      │  disable row, restart │      │  apply safe-mode,    │   │
-      │  target ≤ 20s        │      │  restart             │   │
-      └────────────┬─────────┘      └────────────┬─────────┘   │
-                   │                             │             │
-                   └─────────────┬───────────────┘             │
-                                 ▼                              │
-                    ┌──────────────────────────────────┐       │
-                    │  STATE_VERIFY                    │───────┘
-                    │  probe /health for ≤ 20s         │
-                    └────────────┬─────────────────────┘
-                                 │ (probe fails)
-                                 ▼
-                    ┌──────────────────────────────────┐
-                    │  STATE_ALARM                     │
-                    │  back off, log loudly, slow tick │
-                    └──────────────────────────────────┘
-```
+- Runs **inside the dsh host process** (cordis composition row).
+- Registers 12 model-facing tools on the `tools` service:
+  - 9 for installation / status / triage / safe-mode / drain.
+  - 3 for live session watch.
+- Wires the **tool error capture** to the public `tools/execute` and
+  `tools/post-execute` cordis events.
+- Wires the **session watch** to the public `session/event` cordis
+  event and the `ctx.agents` service (both injected by the dsh host
+  at load time).
 
-The transition from `STATE_TRIAGE` to `STATE_COMPLEX_FIX` is only allowed if the elapsed time since the first failure is below `recoveryBudgetMs` (default 60 s). Otherwise the watchdog stages the safe-mode patch on disk and lets the next tick handle it — preventing a recovery that itself takes too long.
+### 2. Standalone watchdog — `$DSH_HOME/doctor/watchdog.js`
 
-## CLI state machine (dsh doctor)
+- A dep-free Node script (only `node:fs/path/os/http/child_process/crypto`).
+- Runs as a per-user platform service (LaunchAgent on macOS, systemd
+  user unit on Linux, Task Scheduler on Windows).
+- Probes `http://127.0.0.1:$DSH_WEB_PORT/health` every 30 s.
+- Triage + simple / complex recovery within a 60 s ceiling per incident.
+- Generated by `dsh_doctor_install` and replaced on every install.
+
+### 3. Filesystem state — `$DSH_HOME/doctor/`
+
+| File | Purpose |
+| --- | --- |
+| `config.json` | Last-resolved config (env overrides applied). |
+| `installed-marker` | Write-once flag set by `dsh_doctor_install`. |
+| `stopped-marker` | Pause flag (set by `dsh_doctor_pause`). |
+| `restart-lock` | Set by the watchdog when it enters triage; the CLI doctor looks for this and disables its own 60 s budget if found. |
+| `last-known-good` | JSON snapshot of the last healthy profile patch. |
+| `safe-mode.patch` | Auto-generated patch that overrides every bundle in the profile with a no-op config except the allow-list. |
+| `watchdog.js` | The standalone script (regenerated on every install). |
+| `watchdog.pid` | Current watchdog pid. |
+| `logs/watchdog.log` (5 MB × 3) | Watchdog own log. |
+| `logs/doctor.log` (5 MB × 3) | Plugin process log. |
+| `logs/tool-errors.log` (5 MB × 3) | In-process tool error capture log. |
+| `platform/...` | The platform service spec (LaunchAgent / systemd / Windows XML + VBS). |
+
+## Watchdog state machine
 
 ```
-START
-  │  read ~/.dsh/profiles/web/{cordis.yml, cordis.patch.yml}
-  │  tail logs/dsh-web.log
-  ▼
-TRIAGE
-  │  match against PATTERNS (same as watchdog)
-  │  → plan ∈ {disable-row, kill-pid, safe-mode, no-op}
-  ▼
-RECOVERY LOOP   ◀────────────────────────────┐
-  │  execute plan                            │
-  │  restart `dsh web` (via process spawn)   │
-  │  poll /health with 2s timeout            │
-  │  total elapsed > recoveryBudgetMs?       │
-  │    no, but /health not OK                │
-  │      → try a more aggressive plan        │
-  │      (the CLI has no time cap,           │
-  │       it tries disable-row → kill-pid →  │
-  │       safe-mode → all-bundles-disabled)  │
-  │                                          │
-  ▼                                          │
-SUCCESS (health OK) ─────────────────────────┘
-  │
-  ▼
-END
+            ┌──────────────────────────┐
+            │  IDLE                    │
+            │  30 s health probe tick  │
+            └────────────┬─────────────┘
+                         │ /health fails 3×
+                         ▼
+            ┌──────────────────────────┐
+            │  TRIAGE                  │
+            │  - read 200 log lines    │
+            │  - regex pattern table   │
+            │  - elapsed: ~5 s         │
+            └────────────┬─────────────┘
+                         │  simple plan
+                         ▼
+            ┌──────────────────────────┐
+            │  SIMPLE PATH             │
+            │  - write sibling patch   │
+            │    to disable one row    │
+            │  - kill recorded pid     │
+            │  - start dsh web         │
+            │  - elapsed: 10–25 s      │
+            └────────────┬─────────────┘
+                         │  /health still failing
+                         │  or 60 s budget exceeded
+                         ▼
+            ┌──────────────────────────┐
+            │  COMPLEX PATH            │
+            │  - drop safe-mode patch  │
+            │  - kill, start, probe    │
+            │  - elapsed: 25–50 s      │
+            └────────────┬─────────────┘
+                         │  /health back
+                         ▼
+            ┌──────────────────────────┐
+            │  RECOVERED               │
+            │  - back to IDLE          │
+            └──────────────────────────┘
+
+            If 60 s budget exceeded: back off to IDLE,
+            retry on the next probe tick (no thrashing).
 ```
 
-The CLI differs from the watchdog in two ways:
+## CLI state machine
 
-1. **No 60-second budget.** The CLI runs to completion; the only exit conditions are `/health` returning 200 or every plan tried. This is appropriate because the user's previous web session was already broken — there is no "downtime" to bound.
-2. **Aggressive fallback.** When disable-row and kill-pid do not work, the CLI tries safe-mode; if safe-mode still does not boot, the CLI writes a final patch that disables every `- insert:` row except the doctor's own. The user is then asked to either accept that state or to repair by hand.
+```
+            ┌──────────────────────────┐
+            │  TRIAGE                  │
+            │  (same triage engine)    │
+            └────────────┬─────────────┘
+                         │  simple plan
+                         ▼
+            ┌──────────────────────────┐
+            │  APPLY                   │
+            │  (same writeFileAtomic)  │
+            └────────────┬─────────────┘
+                         │
+                         ▼
+            ┌──────────────────────────┐
+            │  VERIFY                  │
+            │  - restart dsh web       │
+            │  - probe /health         │
+            └────────────┬─────────────┘
+                         │
+                ┌────────┴────────┐
+                │ healthy?        │
+                └───┬─────────┬──┘
+                yes │         │ no
+                    ▼         ▼
+            ┌────────────┐   ┌────────────────┐
+            │  DONE      │   │  ITERATE       │
+            │  summary   │   │  next plan /   │
+            │  printed   │   │  disable more  │
+            └────────────┘   │  bundles       │
+                             │  (no budget)   │
+                             └────────────────┘
+```
+
+The CLI doctor does **not** exit until either:
+
+- dsh web reports healthy and the human quits the doctor, or
+- Every non-allow-listed bundle is disabled and the profile still fails
+  to boot (then it exits with a summary telling the human what to do).
 
 ## Triage decision tree
 
-```
-log_buffer = read last 200 lines of dsh web log
-for pattern in PATTERNS (in priority order):
-    if pattern.matches(log_buffer):
-        return pattern.action
-return Action.UNKNOWN  // simple path: do not restart; complex path: safe-mode
-```
+The triage engine runs a priority-ordered regex table against the last
+N log lines. The first match wins.
 
-Pattern priority (highest first):
+| Priority | Pattern | Plan |
+| --- | --- | --- |
+| 100 | `EADDRINUSE` + `:$PORT` | `kill-pid-and-restart` (port is busy with the old pid) |
+| 90 | `Duplicate loader entry` | `disable-row` (the second listed bundle) |
+| 80 | `Schema (parse\|validation) error [^\n]*?(@scope/bad-pkg\|^\S+$)` | `disable-row` |
+| 70 | `Cannot find module` | `disable-row` (the module name) |
+| 60 | `Plugin load error: <id>` | `disable-row` |
+| — | no match | `safe-mode` (complex path) |
 
-1. `EADDRINUSE` — kill only the recorded pid, then simple path.
-2. `duplicate loader entry id: <id>` — simple path: disable that row.
-3. `Schema parse error.*<id>` — simple path: disable that row.
-4. `Cannot find module '<pkg>'` — simple path: mark as broken-deps, disable row.
-5. Generic stack that names a plugin id — simple path: disable that row.
-6. `UNKNOWN` — skip simple path, go directly to complex path.
-
-The priority order is important: an `EADDRINUSE` after a fresh install is almost always an orphan pid; jumping to "disable the latest plugin" first is a worse misdiagnosis.
-
-## File layout under `$DSH_HOME/doctor/`
+## Session watch state machine (per session)
 
 ```
-$DSH_HOME/doctor/
-├── watchdog.js                 # generated, single-file, dep-free
-├── config.json                 # snapshot of plugin Config at install time
-├── last-known-good.json        # last successful bundle set
-├── safe-mode.patch.yml         # generated, used by complex path
-├── .doctor-installed           # presence marker
-├── .doctor-stopped             # user-paused marker (optional)
-├── .doctor-restart.lock        # in-progress restart (TTL 120 s)
-├── .doctor-watchdog.pid        # watchdog pid
-├── logs/
-│   ├── watchdog.log            # rotated 5 MB × 3
-│   ├── doctor.log              # rotated 5 MB × 3
-│   ├── dsh-web.log             # mirror of the dsh web stdout/stderr
-│   └── tool-errors.log         # rotated 5 MB × 3
-├── state/
-│   └── (none yet — reserved for future use)
-└── platform/                   # generated, platform-specific
-    ├── com.deepseek-ai.dsh-doctor.plist   (macOS)
-    ├── dsh-doctor.service                 (systemd)
-    └── DshDoctorTask.xml + .vbs           (Windows)
+        ┌──────────────────────────────────────────────┐
+        │  every session/event                         │
+        │   ├ turn/start → turnRunning = true          │
+        │   ├ turn/end:completed → reset nudgesSent    │
+        │   ├ turn/end:error → record lastFailure      │
+        │   ├ user/message:user → reset nudgesSent     │
+        │   └ everything else → lastEventAt = now      │
+        └──────────────────────────────────────────────┘
+                              │
+                              │ every watchTickIntervalMs
+                              ▼
+        ┌──────────────────────────────────────────────┐
+        │  candidate?                                  │
+        │   turnRunning? AND                           │
+        │   now - lastEventAt ≥ watchIdleThresholdMs? │
+        │   nudgesSent < watchMaxNudgesPerSession?     │
+        │   now - lastNudgeAt ≥ watchNudgeCooldownMs? │
+        │   user NOT currently driving?                │
+        └────────────────────┬─────────────────────────┘
+                       yes   │
+                             ▼
+        ┌──────────────────────────────────────────────┐
+        │  ctx.agents.get(sessionId).followup({       │
+        │    content: [{type: 'text', text: '继续'}],  │
+        │    source: {kind: 'user'},                   │
+        │  })                                          │
+        │                                              │
+        │  nudgesSent += 1;  lastNudgeAt = now         │
+        └──────────────────────────────────────────────┘
+```
+
+## File layout
+
+```
+~/.dsh/doctor/
+├── config.json                # last-resolved config (env overrides applied)
+├── installed-marker           # { installedAt, version }
+├── stopped-marker             # pause flag
+├── restart-lock               # triage in progress
+├── last-known-good            # JSON snapshot
+├── safe-mode.patch            # current safe-mode override
+├── watchdog.js                # standalone dep-free script
+├── watchdog.pid               # current watchdog pid
+├── platform/                  # service spec (LaunchAgent / systemd / .vbs)
+│   ├── com.dsh.doctor.plist   # macOS
+│   ├── dsh-doctor.service     # Linux
+│   ├── dsh-doctor.xml         # Windows Task Scheduler
+│   └── dsh-doctor.vbs         # Windows hidden-launcher
+└── logs/
+    ├── watchdog.log
+    ├── watchdog.log.1
+    ├── watchdog.log.2
+    ├── doctor.log
+    ├── doctor.log.1
+    ├── doctor.log.2
+    └── tool-errors.log
 ```
 
 ## Recovery invariants
 
-- **At most 3 recovery attempts per 5 minutes** (watchdog only). Beyond that, the watchdog enters `STATE_ALARM` and ticks at 5 s instead of the configured interval. The CLI has no such limit.
-- **A watchdog restart that takes longer than `recoveryBudgetMs` is abandoned mid-flight.** The watchdog writes an alarm log and waits for the next tick — a watchdog that itself becomes the bottleneck is worse than a slow human.
-- **The watchdog never edits the live `cordis.patch.yml` directly.** All triage changes are staged as sibling files (`cordis.patch.yml.doctor-disabled-<id>`) so a manual `dsh plugin update` is not clobbered. The watchdog activates a change by renaming a sibling file in place under a single rename call (atomic on POSIX, near-atomic on Windows).
-- **The watchdog never runs `pkill`, `killall`, or any broad-kill command.** It only signals the pid recorded in `~/.dsh/profiles/web/.dsh-web.pid`. If that file is missing or stale, the watchdog logs and skips the kill step.
+- `watchdog.js` only signals the PID stored in `~/.dsh/profiles/web/.dsh-web.pid`.
+  It never invokes `pkill` or `killall`.
+- Sibling-file patch writes mean your real `cordis.patch.yml` is never
+  silently mutated. Inspect / revert at any time.
+- If 60 s elapses without a healthy probe, the watchdog backs off and
+  retries on the next probe tick instead of thrashing.
+- The CLI doctor and the watchdog **coordinate** through the
+  `restart-lock` file — whoever holds the lock is the one currently
+  driving the recovery.
+- The session watch **only** sends a `继续` user message through
+  `agent.followup`. It does not modify model state, tool calls, or
+  the waterfall.
 
-## Tool error capture (in-process)
-
-`dsh-doctor` subscribes to the dsh cordis event waterfalls that every tool dispatch traverses:
+## Tool error capture flow
 
 ```
-tool call: model → tools/pre-execute → tools/execute → tools/post-execute
-                                              │
-                                              ▼
-                                  ┌──────────────────────────┐
-                                  │ doctor classifier + sink  │
-                                  │  bucket ∈ {transient,    │
-                                  │             agent,       │
-                                  │             business}     │
-                                  │  record → tool-errors.log│
-                                  │  record → per-session    │
-                                  │             memory queue │
-                                  └──────────────────────────┘
+       dsh host
+         │
+         │  any tool call
+         ▼
+   tools/pre-execute    ◀── pre flight (we don't act here)
+         │
+         ▼
+   tools/execute        ◀── waterfall `next()` then post
+         │   ├── before next(): nothing
+         │   ├── result.isError === true
+         │   └── after next(): classify → record → log
+         ▼
+   tools/post-execute   ◀── last-chance hook (also observes)
+         │
+         ▼
+       result returned to caller
 ```
 
-The classification is decided in this order:
+## Why the watchdog is dep-free
 
-1. The user's custom classifier (if registered through the extension point) wins.
-2. Otherwise the default classifier — see `src/tool-errors.ts` for the table.
-3. Anything not matched by the table is `business` (pass-through, never mutated).
+The watchdog has to keep working when:
 
-The doctor's default behaviour on every bucket is **observation only** — the waterfall returns `next()` unchanged. The doctor does not block, retry, or rewrite the tool's outcome during a live turn. Deferred (`agent`) errors are kept in a per-session memory queue (default 500 entries, evicted FIFO) for `dsh_doctor_drain_deferred` to surface.
+- dsh cannot spawn a child because of a broken bundle.
+- pnpm/Node is in a weird state because of a half-installed plugin.
 
-## Why the watchdog is a separate generated script
+So the watchdog is shipped as a generated, dependency-free Node script.
+It only uses `node:fs/path/os/http/child_process/crypto`. If Node still
+runs, the watchdog runs.
 
-- The watchdog must survive a `dsh web` that cannot even resolve its own dependencies. The plugin code is loaded by `dsh web`; if the loader is broken, the plugin is unreachable. The watchdog has to be reachable from a clean `node` invocation with no `node_modules` access.
-- Upgrades to `dsh-doctor` cannot strand the watchdog on an old version. Each `dsh_doctor_install` (or `_reinstall`) regenerates the standalone script with the current code embedded, so a watchdog upgrade is a *script* upgrade, not a *process* upgrade.
-- The watchdog has a single responsibility: keep `dsh web` healthy. Moving it out of the plugin runtime lets the plugin evolve without coupling watchdog correctness to dsh's loader behaviour.
+## Why the tool error capture and session watch are in-process
 
-## Why tool error capture stays in-process
+The `tools/*` and `session/event` cordis events are only fired inside
+the dsh host process. A standalone watchdog cannot observe them. The
+capture + watch run inside `apply(ctx, config)` and live as long as
+the host lives. The standalone watchdog writes its own log
+(`logs/watchdog.log`); the in-process capture writes
+`logs/tool-errors.log`. The two never share state — that is intentional,
+so a crash in the host does not corrupt the watchdog's log and vice versa.
 
-- It only needs `tools/pre-execute` / `tools/execute` / `tools/post-execute` — public cordis events that every dsh-tools-based plugin can subscribe to. No host-only deps.
-- A separate process for "observation only" would add latency and a serialization boundary for no benefit. The doctor's promise is that the waterfall returns immediately (`next()` unchanged).
-- The deferred-queue is per-process (cleared on plugin reload). This is acceptable because the doctor's promise is "available in the *current* session" — cross-session memory is the user's job (or another plugin's).
+## Why the session watch does not require dsh-agent / dsh-session as deps
+
+The community `dsh-auto-continue` plugin (HsiangNianian) implements the
+same feature with `import type` from `@deepseek-ai/dsh-agent` /
+`@deepseek-ai/dsh-session`. That works for that plugin because it ships
+as a single built bundle and resolves those packages from the dsh host's
+node_modules at runtime through the same pnpm profile that the host
+itself uses.
+
+For dsh-doctor we took a more conservative path: `src/session-watch.ts`
+declares **only the structural types it needs** (`DshAgent`,
+`DshAgentsService`, `DshSession`, `DshSessionEvent`) and accesses the
+cordis context via duck-typing (`(ctx as any).agents`,
+`(ctx as any).on('session/event', ...)`). This means:
+
+- The plugin **never** `require()`s `@deepseek-ai/dsh-agent` or
+  `@deepseek-ai/dsh-session` at runtime.
+- We do not list those packages as devDependencies, peerDependencies,
+  or peerDependenciesMeta — we don't need them to typecheck because
+  the types are local.
+- The plugin works as long as the dsh host provides the standard
+  `ctx.agents` service (every shipped dsh version does) and fires the
+  `session/event` cordis event (every shipped dsh version does). If
+  the host does not provide them, the watch degrades to a no-op and
+  logs a warning — the other 9 tools and the standalone watchdog still
+  work.
+
+The trade-off is that if dsh ever renames `ctx.agents` or
+`session/event`, the watch will silently no-op until a dsh-doctor
+release catches up. We accepted this risk because the dsh host
+internals (the names above) have been stable since rc.6 and the watch
+is intentionally opt-out (`watchEnabled: false`).
+
+## Relationship to other community plugins
+
+- **`dsh-daemon`** (chenkai2) — independent of dsh-doctor. Both can be
+  installed at the same time and provide layered protection. dsh-doctor
+  explicitly does not call dsh-daemon.
+- **`dsh-auto-continue`** (HsiangNianian) — overlaps with the session
+  watch. dsh-doctor's v0.2.0 watch re-implements the core feature
+  (idle detection + nudge) inside the dsh-doctor bundle, using the
+  same `agent.followup` primitive. If you depend on
+  `dsh-auto-continue`'s UI / notification bridge, keep it installed
+  alongside dsh-doctor — they do not conflict.

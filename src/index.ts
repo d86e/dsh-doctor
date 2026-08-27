@@ -59,6 +59,12 @@ import {
   type ToolErrorCapture,
   type ToolErrorEntry,
 } from './tool-errors.js'
+import {
+  installSessionWatch,
+  type SessionWatch,
+  type SessionState,
+  type WatchConfig,
+} from './session-watch.js'
 
 const execFile = promisify(execFileCb)
 const require = createRequire(import.meta.url)
@@ -180,6 +186,26 @@ export function apply(ctx: Context, config: ConfigT): void {
     } catch (e) {
       void log.warn(`tool error capture failed to install: ${(e as Error).message}`)
       capture = null
+    }
+  }
+
+  // Wire session watcher (degrades silently if the host does not expose
+  // ctx.agents / session/event).
+  let watch: SessionWatch | null = null
+  if (cfg.watchEnabled) {
+    try {
+      const watchCfg: WatchConfig = {
+        watchEnabled: cfg.watchEnabled,
+        idleThresholdMs: cfg.watchIdleThresholdMs,
+        nudgeCooldownMs: cfg.watchNudgeCooldownMs,
+        maxNudgesPerSession: cfg.watchMaxNudgesPerSession,
+        continueText: cfg.watchContinueText,
+        tickIntervalMs: cfg.watchTickIntervalMs,
+      }
+      watch = installSessionWatch(ctx, watchCfg, log)
+    } catch (e) {
+      void log.warn(`session watch failed to install: ${(e as Error).message}`)
+      watch = null
     }
   }
 
@@ -334,6 +360,7 @@ export function apply(ctx: Context, config: ConfigT): void {
           }
         }
         capture?.dispose()
+        watch?.dispose()
         await log.info(`uninstall complete: ${removed.length} paths removed`)
         return {
           ok: true,
@@ -386,6 +413,8 @@ export function apply(ctx: Context, config: ConfigT): void {
           recent,
           toolErrors: capture ? readSummary(capture) : null,
           toolErrorCaptureEnabled: !!capture,
+          watchActive: !!watch?.isActive,
+          trackedSessions: watch ? watch.list().length : 0,
           version: pluginVersion(),
         }
       }),
@@ -508,6 +537,74 @@ export function apply(ctx: Context, config: ConfigT): void {
         const entries = capture.queue.drain(sessionId, max)
         await log.info(`drained ${entries.length} deferred tool errors (sessionId=${sessionId ?? 'all'})`)
         return { ok: true, reason: 'drained', sessionId: sessionId ?? 'all', entries }
+      }),
+    }),
+  )
+
+  // ---- dsh_doctor_watch_list (NEW in 0.2.0) ----
+  harness.registerTool(
+    ctx,
+    defineTool({
+      name: 'dsh_doctor_watch_list',
+      description:
+        'List all sessions the doctor is currently watching. Each entry shows last event age, ' +
+        'whether a turn is running, how many nudges have been sent, and the last failure (if any).',
+      parameters: {},
+      output: JSON_OUTPUT,
+      execute: execBody(async (_args, _exec) => {
+        if (!watch) return { ok: false, reason: 'session watch is disabled', sessions: [] as SessionState[] }
+        return {
+          ok: true,
+          reason: 'list',
+          watchActive: watch.isActive,
+          count: watch.list().length,
+          sessions: watch.list(),
+        }
+      }),
+    }),
+  )
+
+  // ---- dsh_doctor_watch_nudge (NEW in 0.2.0) ----
+  harness.registerTool(
+    ctx,
+    defineTool({
+      name: 'dsh_doctor_watch_nudge',
+      description:
+        'Manually inject a "continue" message into a live session. Use this when the user wants ' +
+        'to unstick a session on demand (the automatic watch already handles idle detection).',
+      parameters: {
+        sessionId: { type: 'string', description: 'Session id to nudge.', required: true },
+        text: { type: 'string', description: 'Text to inject. Defaults to the configured continue text.' },
+      },
+      output: JSON_OUTPUT,
+      execute: execBody(async (args, _exec) => {
+        if (!watch) return { ok: false, reason: 'session watch is disabled' }
+        const text = args.text && args.text.length > 0 ? args.text : cfg.watchContinueText
+        const r = watch.nudge(args.sessionId, text)
+        await log.info(`manual nudge ${args.sessionId}: ${r.ok ? 'sent' : r.reason}`)
+        return { ok: r.ok, reason: r.reason ?? 'sent', sessionId: args.sessionId, text }
+      }),
+    }),
+  )
+
+  // ---- dsh_doctor_watch_cancel (NEW in 0.2.0) ----
+  harness.registerTool(
+    ctx,
+    defineTool({
+      name: 'dsh_doctor_watch_cancel',
+      description:
+        'Cancel the current turn on a live session. Use this when a session is truly hung and ' +
+        'a nudge will not help (e.g. the agent is in a loop). The cancellation is marked as ' +
+        '"user" so it is not confused with a system stop.',
+      parameters: {
+        sessionId: { type: 'string', description: 'Session id whose turn should be cancelled.', required: true },
+      },
+      output: JSON_OUTPUT,
+      execute: execBody(async (args, _exec) => {
+        if (!watch) return { ok: false, reason: 'session watch is disabled' }
+        const r = watch.cancel(args.sessionId)
+        await log.info(`manual cancel ${args.sessionId}: ${r.ok ? 'cancelled' : r.reason}`)
+        return { ok: r.ok, reason: r.reason ?? 'cancelled', sessionId: args.sessionId }
       }),
     }),
   )

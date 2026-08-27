@@ -1,11 +1,12 @@
 # dsh-doctor bundle patch: mount the plugin as a composition row so the
-# eight dsh_doctor_* tools are available to every agent after the next
+# twelve dsh_doctor_* tools are available to every agent after the next
 # `dsh web` start. The watchdog itself is generated into $DSH_HOME/doctor
 # by `dsh_doctor_install` and runs as an independent platform service.
 - insert:
     - id: dsh-doctor
       name: '@d86e/dsh-doctor'
       config:
+        # Web boot recovery
         healthIntervalMs: 30000
         healthFailuresToRecover: 3
         recoveryBudgetMs: 60000
@@ -13,5 +14,13 @@
         logBackups: 3
         safeModeBundles:
           - dsh-core
+        # Tool error capture
         toolErrorCapture: true
         toolErrorMaxQueue: 500
+        # Live session watch (nudges stuck turns)
+        watchEnabled: true
+        watchIdleThresholdMs: 600000       # 10 minutes
+        watchNudgeCooldownMs: 300000       # 5 minutes between nudges
+        watchMaxNudgesPerSession: 3
+        watchContinueText: "继续"
+        watchTickIntervalMs: 30000         # 30 s idle check

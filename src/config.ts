@@ -26,6 +26,18 @@ export interface Config {
   toolErrorCapture: boolean
   /** Max entries kept per session in the in-memory queue. */
   toolErrorMaxQueue: number
+  /** Master switch for the session watcher. */
+  watchEnabled: boolean
+  /** A session with no event for this long is a candidate for a nudge. */
+  watchIdleThresholdMs: number
+  /** Minimum interval between two nudges of the same session. */
+  watchNudgeCooldownMs: number
+  /** Stop nudging a session after this many nudges. */
+  watchMaxNudgesPerSession: number
+  /** Text to send (supports {elapsed}, {turn}, {sessionId}). */
+  watchContinueText: string
+  /** Idle-check tick interval. */
+  watchTickIntervalMs: number
 }
 
 export const Config: Config = {
@@ -37,6 +49,12 @@ export const Config: Config = {
   safeModeBundles: ['dsh-core'],
   toolErrorCapture: true,
   toolErrorMaxQueue: 500,
+  watchEnabled: true,
+  watchIdleThresholdMs: 10 * 60 * 1000,
+  watchNudgeCooldownMs: 5 * 60 * 1000,
+  watchMaxNudgesPerSession: 3,
+  watchContinueText: '继续',
+  watchTickIntervalMs: 30_000,
 }
 
 /**
@@ -65,5 +83,13 @@ export function resolveConfig(base: Config, env: NodeJS.ProcessEnv = process.env
     safeModeBundles: base.safeModeBundles,
     toolErrorCapture: bool('DSH_DOCTOR_TOOL_ERROR_CAPTURE', base.toolErrorCapture),
     toolErrorMaxQueue: num('DSH_DOCTOR_TOOL_ERROR_QUEUE', base.toolErrorMaxQueue),
+    watchEnabled: bool('DSH_DOCTOR_WATCH_ENABLED', base.watchEnabled),
+    watchIdleThresholdMs: num('DSH_DOCTOR_WATCH_IDLE_MS', base.watchIdleThresholdMs),
+    watchNudgeCooldownMs: num('DSH_DOCTOR_WATCH_COOLDOWN_MS', base.watchNudgeCooldownMs),
+    watchMaxNudgesPerSession: num('DSH_DOCTOR_WATCH_MAX_NUDGES', base.watchMaxNudgesPerSession),
+    watchContinueText: (env.DSH_DOCTOR_WATCH_TEXT && env.DSH_DOCTOR_WATCH_TEXT.length > 0)
+      ? env.DSH_DOCTOR_WATCH_TEXT
+      : base.watchContinueText,
+    watchTickIntervalMs: num('DSH_DOCTOR_WATCH_TICK_MS', base.watchTickIntervalMs),
   }
 }

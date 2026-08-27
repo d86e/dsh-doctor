@@ -1,69 +1,100 @@
 # Changelog
 
-All notable changes to this project will be documented in this file.
+All notable changes to `@d86e/dsh-doctor` are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.2.0] — 2026-08-28
 
-## [0.1.0] - 2026-01-15
+### Added — live session watch
+
+- **`src/session-watch.ts`** — in-process monitor for every dsh session in the
+  host process. Subscribes to the `session/event` cordis event that dsh fires
+  for each session; keeps a per-session state machine (idle, last failure,
+  nudges sent, last manual user message).
+- **Idle detection** — a session is "stuck" when it has not emitted any new
+  event for `watchIdleThresholdMs` (default 10 min) while still inside a
+  `turn/start` / `turn/end` window. Default 10 min; tuneable per environment.
+- **Recovery** — when a session is stuck, the watcher sends a `继续` user
+  message through `ctx.agents.get(sessionId).followup(...)`. This is the
+  exact primitive the community `dsh-auto-continue` plugin uses — we
+  re-implemented it inside dsh-doctor to give you layered protection in
+  one bundle.
+- **Three protections against over-firing**:
+  1. `watchNudgeCooldownMs` between two nudges of the same session.
+  2. `watchMaxNudgesPerSession` cap, reset on `turn/end:completed`.
+  3. If a real `user/message` (source kind `user`) arrived within 5 s, the
+     doctor steps back and assumes the human is driving.
+- **Three new model-facing tools**:
+  - `dsh_doctor_watch_list` — list every tracked session.
+  - `dsh_doctor_watch_nudge` — manually inject a custom message.
+  - `dsh_doctor_watch_cancel` — cancel a turn with `kind: 'user'`.
+- **Dependency story** — `session-watch.ts` never `require()`s a dsh host
+  package. It only reads `ctx.agents` and `ctx.on('session/event', ...)`,
+  both injected by the dsh host runtime. If they are missing, the watch
+  degrades to a no-op and logs a warning; the other 9 tools + the watchdog
+  still work.
+
+### Added — config knobs
+
+`watchEnabled`, `watchIdleThresholdMs`, `watchNudgeCooldownMs`,
+`watchMaxNudgesPerSession`, `watchContinueText`, `watchTickIntervalMs` —
+each with a matching `DSH_DOCTOR_WATCH_*` env var override. All defaults
+listed in the README.
+
+### Changed
+
+- `cordis.patch.yml` now declares the new watch fields with safe defaults.
+- `apply(ctx, config)` now installs both the tool error capture and the
+  session watch; both are wrapped in `try / catch` so a host that doesn't
+  expose the relevant events does not break the plugin load.
+- `dsh_doctor_status` output now includes `watchActive`,
+  `trackedSessions` and a snapshot of the tool error summary alongside
+  the existing fields.
+- `dsh_doctor_uninstall` also disposes the watch handle.
+
+### Tests
+
+- **`tests/session-watch.spec.ts`** — 11 new tests covering fill-template,
+  no-agents-service no-op, tracking, failure capture, manual nudge,
+  manual cancel, and unknown-session handling.
+- **Total: 83 unit tests across 9 spec files, all green.**
+
+### Notes
+
+- The runtime peer-version guard still targets `@deepseek-ai/dsh-tools`
+  `^0.1.0-rc.6`. We do not pull in `dsh-agent` / `dsh-session` /
+  `dsh-settings` as devDeps; the session watch types are local and the
+  dsh host runtime is expected to provide `ctx.agents` at load time.
+- DSH community auto-continue is now subsumed for the core feature
+  (idle nudge + cancel). If you depend on its UI / notification bridge,
+  keep it installed alongside dsh-doctor — they do not conflict.
+
+---
+
+## [0.1.0] — 2026-08-28
 
 ### Added
 
-- **Web boot recovery (60-second budget)** — standalone Node watchdog
-  (`$DSH_HOME/doctor/watchdog.js`) registered as a per-user platform
-  service on macOS (LaunchAgent), Linux (systemd user unit, cron
-  fallback), and Windows (Task Scheduler via VBS launcher —
-  best-effort, unverified).
-- **CLI doctor (no time budget)** — `dsh doctor` reuses the same
-  triage + recovery primitives for when `dsh web` never came up; runs
-  to completion with no 60s cap.
-- **Tool error capture** — in-process subscription to
-  `tools/pre-execute` / `tools/execute` / `tools/post-execute`. Errors
-  are classified into `transient` / `agent` / `business` and recorded
-  to `logs/tool-errors.log` plus an in-memory per-session queue.
-  `dsh_doctor_drain_deferred` surfaces queued errors on demand.
-  Default behaviour: **observe, never mutate** the waterfall.
-- Triage engine that classifies boot failures against known patterns:
-  - `duplicate loader entry id: <id>` → disable that row, restart.
-  - `Schema parse error.*<pkg>` → disable that row, restart.
-  - `Cannot find module '<pkg>'` → mark row as broken-deps, disable, restart.
-  - `EADDRINUSE` → kill only the recorded pid, restart.
-  - Generic stack naming a plugin → disable that one row.
-- Simple-path recovery (target ≤ 20 s) for the above.
-- Complex-path recovery: safe-mode patch layer that overrides every
-  bundle except `safeModeBundles` (default `['dsh-core']`).
-- `last-known-good.json` snapshot of the last successfully booted profile.
-- Rotating logs (5 MB × 3) under `$DSH_HOME/doctor/logs/`.
-- Single-instance pid lock and graceful signal handling in the watchdog.
-- Eight model-facing tools: `dsh_doctor_install`, `dsh_doctor_uninstall`,
-  `dsh_doctor_status`, `dsh_doctor_pause`, `dsh_doctor_resume`,
-  `dsh_doctor_diagnose`, `dsh_doctor_safe_mode_enter`,
-  `dsh_doctor_safe_mode_exit`, `dsh_doctor_drain_deferred`.
-- Runtime peer-version guard: refuses to load if the resolved
-  `@deepseek-ai/dsh-tools` is outside `^0.1.0-rc.6`.
-- CI: typecheck → build → unit tests → pack.
+- **Web boot recovery** (60 s budget) — health probe every 30 s, triage
+  engine, simple / complex recovery paths, safe-mode patch layer,
+  rotating logs (5 MB × 3), rate-limited restarts.
+- **CLI doctor** (no time budget) — unbounded triage + recovery for
+  already-broken installs, runs to completion.
+- **Tool error capture** — subscribes to `tools/pre-execute`,
+  `tools/execute`, `tools/post-execute` cordis events; classifies every
+  failed tool call into `transient` / `agent` / `business`; records to
+  `logs/tool-errors.log` and a per-session in-memory queue. Default
+  policy: observe, never mutate the waterfall.
+- **Standalone Node watchdog** — written to `$DSH_HOME/doctor/watchdog.js`,
+  runs as a per-user platform service (LaunchAgent / systemd / Task
+  Scheduler). Dep-free (only `node:fs/path/os/http/child_process/crypto`).
+- **9 model-facing tools** — install, uninstall, status, pause, resume,
+  diagnose, safe_mode_enter, safe_mode_exit, drain_deferred.
+- **Runtime peer-version guard** — refuses to load if
+  `@deepseek-ai/dsh-tools` resolves outside `^0.1.0-rc.6`.
+- **72 unit tests** across 8 spec files; typecheck + build green.
 
-### Known limitations
-
-- Windows Task Scheduler path is implemented but has not been verified
-  on a real Windows machine.
-- The watchdog cannot recover from a node-binary corruption (e.g.
-  wrong Node version) — it will keep the simple path failing;
-  safe-mode will also fail; the alarm log will be the only signal.
-- The triage engine only knows the patterns documented above. New
-  failure modes from future dsh versions will land in the complex
-  path until patterns are added.
-- **Active session watch** (subscribe to `turn/end`, `host/agent-error`,
-  inject "继续") and **loop guard** are not in 0.1.0. They require
-  `require('@deepseek-ai/dsh-agent')` and
-  `require('@deepseek-ai/dsh-settings')` from a plugin install, which
-  pnpm currently isolates under `.pnpm/`. Planned for 0.2.0.
-- The tool-error default policy is deliberately conservative: it
-  observes the waterfall but does not block, retry, or rewrite. To
-  change behaviour, register a custom classifier through the
-  extension point described in `docs/ARCHITECTURE.md`.
-
-[Unreleased]: https://github.com/d86e/dsh-doctor/compare/v0.1.0...HEAD
+[0.2.0]: https://github.com/d86e/dsh-doctor/releases/tag/v0.2.0
 [0.1.0]: https://github.com/d86e/dsh-doctor/releases/tag/v0.1.0
