@@ -19,7 +19,7 @@ describe('watchdog standalone body', () => {
     // Only Node built-ins should appear as `require('node:...')` or `require('fs')` etc.
     const requires = [...WATCHDOG_STANDALONE_BODY.matchAll(/require\(['"]([^'"]+)['"]\)/g)].map((m) => m[1])
     for (const r of requires) {
-      const builtin = ['fs', 'path', 'os', 'http', 'child_process', 'crypto', 'node:fs', 'node:path', 'node:os', 'node:http', 'node:child_process', 'node:crypto']
+      const builtin = ['fs', 'path', 'os', 'http', 'net', 'child_process', 'crypto', 'node:fs', 'node:path', 'node:os', 'node:http', 'node:net', 'node:child_process', 'node:crypto']
       expect(builtin).toContain(r)
     }
   })
