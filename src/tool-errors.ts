@@ -175,7 +175,11 @@ export function defaultPolicy(_ctx: ToolErrorContext, klass: ToolErrorClass): {
 } {
   if (klass === 'transient') return { record: true, log: true, defer: false }
   if (klass === 'agent') return { record: true, log: true, defer: true }
-  return { record: true, log: false, defer: false }
+  // Business errors are also written to logs/tool-errors.log so the
+  // operator has a permanent record (the in-memory queue is volatile).
+  // They are NOT deferred because the agent may already be handling the
+  // error in-band (a 4xx is part of normal API use, not a hang).
+  return { record: true, log: true, defer: false }
 }
 
 /** Returned handle so the doctor can stop subscribing in tests. */

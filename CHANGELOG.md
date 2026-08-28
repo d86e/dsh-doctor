@@ -171,8 +171,6 @@ listed in the README.
 - **Web boot recovery** (60 s budget) — health probe every 30 s, triage
   engine, simple / complex recovery paths, safe-mode patch layer,
   rotating logs (5 MB × 3), rate-limited restarts.
-- **CLI doctor** (no time budget) — unbounded triage + recovery for
-  already-broken installs, runs to completion.
 - **Tool error capture** — subscribes to `tools/pre-execute`,
   `tools/execute`, `tools/post-execute` cordis events; classifies every
   failed tool call into `transient` / `agent` / `business`; records to

@@ -5,7 +5,7 @@
 [![Node](https://img.shields.io/badge/node-%3E%3D18-339933)](https://nodejs.org)
 [![DSH](https://img.shields.io/badge/dsh-%3E%3D0.1.0--rc.6-0066ff)](https://github.com/deepseek-ai/deepseek-harness)
 
-> Self-healing watchdog for the DeepSeek Harness **web** profile. Recovers from plugin-induced boot failures within a **60-second** downtime budget. Runs an unbounded `dsh doctor` CLI for already-broken installs. Captures every **tool error** through the official `tools/*` event hooks. **Watches every live session** and nudges stuck turns back to life.
+> Self-healing watchdog for the DeepSeek Harness **web** profile. Recovers from plugin-induced boot failures within a **60-second** downtime budget. Captures every **tool error** through the official `tools/*` event hooks. **Watches every live session** and nudges stuck turns back to life. (A `dsh doctor` CLI subcommand for already-broken installs is planned for v0.3.0.)
 
 `dsh-doctor` runs as an **independent Node process** (LaunchAgent on macOS, systemd user unit on Linux, Task Scheduler on Windows) so it survives even when `dsh web` cannot spawn a child. It is **fully independent of `dsh-daemon`**: it does not call it, does not require it, and does not conflict with it. If both are installed, you get layered protection.
 
@@ -39,9 +39,9 @@ Four jobs, in one plugin:
 | Job | Where it runs | Time budget | Trigger |
 | --- | --- | --- | --- |
 | **1. Web boot recovery** | Standalone Node process (LaunchAgent / systemd / Task Scheduler) | **60 seconds** per incident | `dsh web` health probe fails N times in a row |
-| **2. CLI doctor** | `dsh doctor` in your shell, drives the same `apply(ctx, config)` code path | **No budget** — keeps trying until solved | You start it |
+| **2. CLI doctor** | _(planned for v0.3.0)_ | — | — |
 | **3. Tool error capture** | In-process, attached to the `tools/*` cordis event waterfalls | Passive — never blocks the host | Any tool call fails in any session |
-| **4. Live session watch** | In-process, attached to `session/event` | Tick every 30 s, no events lost | A turn is `running` with no new event for `watchIdleThresholdMs` (default 10 min) |
+| **4. Live session watch** | In-process, attached to `session/event` | Tick every 30 s, no events lost | A turn is `running` with no new event for `watchIdleThresholdMs` (default 3 min) |
 
 ### 1. Web boot recovery (60 s budget)
 
@@ -66,18 +66,20 @@ Every 30 s the watchdog probes `http://127.0.0.1:$DSH_WEB_PORT/health`. After 3 
 - A sibling file pattern means your real `cordis.patch.yml` is never silently mutated. Inspect / revert at any time.
 - If 60 s elapses without a healthy probe, the watchdog backs off and retries on the next probe tick instead of thrashing.
 
-### 2. CLI doctor (no time budget)
+### 2. CLI doctor (planned for v0.3.0)
 
-```
-$ dsh doctor
-```
-
-Same triage + recovery engine, but:
-
-- Started in the foreground, not as a service.
-- The 60-second budget is **disabled**. It keeps iterating (fix → restart → probe → fix → …) until the profile boots cleanly.
-- More aggressive fallbacks are allowed because a human is watching: when simple + safe-mode both fail, it will eventually offer to disable **every** non-allow-listed bundle and boot with only the allow-list.
-- A "what did you change?" summary is printed at the end so the human can revert anything they don't want.
+> ⚠️ **Not shipped yet.** A future release will add a `dsh doctor` subcommand
+> that runs the same triage + recovery engine in the foreground with no
+> time budget, for users whose `dsh web` is so broken it never even
+> started. Today, the only recovery path is the in-process plugin +
+> standalone watchdog (jobs 1 + 3 + 4 above).
+>
+> Until then, the recommended way to recover a completely dead install
+> is: ask any working dsh agent to call `dsh_doctor_diagnose` to identify
+> the failing bundle, then manually disable that bundle in
+> `~/.dsh/profiles/web/cordis.patch.yml` and `dsh web` to restart.
+>
+> Track progress: <https://github.com/d86e/dsh-doctor/issues>
 
 ### 3. Tool error capture
 
@@ -255,8 +257,8 @@ After install, you can ask the agent:
 From a shell:
 
 ```bash
-dsh doctor                  # unbounded CLI doctor (foreground)
-dsh doctor --dry-run        # triage only, no writes
+# (Planned) dsh doctor                  # unbounded CLI doctor (foreground)
+# (Planned) dsh doctor --dry-run        # triage only, no writes
 ```
 
 To uninstall:

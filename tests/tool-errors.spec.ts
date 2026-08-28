@@ -51,9 +51,9 @@ describe('defaultPolicy', () => {
     const p = defaultPolicy({ toolName: 't', info: null, message: '', sessionId: null, agentId: null }, 'agent')
     expect(p).toEqual({ record: true, log: true, defer: true })
   })
-  it('business → record only, not logged', () => {
+  it('business → recorded AND logged to logs/tool-errors.log (but never deferred)', () => {
     const p = defaultPolicy({ toolName: 't', info: null, message: '', sessionId: null, agentId: null }, 'business')
-    expect(p).toEqual({ record: true, log: false, defer: false })
+    expect(p).toEqual({ record: true, log: true, defer: false })
   })
 })
 
