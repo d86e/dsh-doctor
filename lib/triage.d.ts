@@ -24,9 +24,11 @@ export interface Pattern {
     extractId: (match: RegExpMatchArray) => string | null;
     /**
      * Build an action plan from the matched pattern. The `id` argument is the
-     * plugin id returned by `extractId`, or `null` if not applicable.
+     * plugin id returned by `extractId`, or `null` if not applicable. The
+     * `match` argument is the full RegExpMatchArray so build can also pull
+     * non-id tokens (e.g. a Node version string).
      */
-    build: (id: string | null) => ActionPlan;
+    build: (id: string | null, match?: RegExpMatchArray) => ActionPlan;
 }
 export type ActionPlan = {
     kind: 'disable-row';

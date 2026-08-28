@@ -234,9 +234,9 @@ export const PATTERNS: readonly Pattern[] = [
   {
     id: 'node-version-mismatch',
     description: 'A plugin requires a Node version newer than what is installed.',
-    regex: /Requires Node(?:\.js)?\s+[`'"]?([~^]?\d[\d.]*)/i,
+    regex: /Requires Node(?:\.js)?\s+[\x60'"]?([~^]?\d[\d.]*)/i,
     priority: 95,
-    extractId: (m) => null,
+    extractId: (_m) => null,
     build: (_id, m) => ({
       kind: 'notify-user',
       reason: 'plugin requires Node ' + (m ?? '?') + ' but dsh ships an older Node. Update dsh or remove the plugin.',
