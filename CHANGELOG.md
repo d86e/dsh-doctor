@@ -5,6 +5,21 @@ All notable changes to `@d86e/dsh-doctor` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.5] — 2026-08-28
+
+### Fixed — watchdog self-exit between ticks
+
+- **`src/watchdog.standalone.ts`** — remove two stray `.unref()` calls on
+  the tick `setTimeout`s. With them in place, the 30 s gap between probes
+  left the event loop with no ref'd handle, and Node exited cleanly.
+  launchd's `KeepAlive` then re-spawned the watchdog in a tight loop
+  (`runs` climbed, `last exit code` stayed 0, the log only ever showed a
+  single "watchdog started" line). Removing `.unref()` keeps the timer
+  ref'd and the process alive.
+- **`tests/watchdog.spec.ts`** — add regression tests that assert the
+  generated body no longer contains the unref'd tick `setTimeout`s while
+  still unref'ing the spawned `dsh web` child process.
+
 ## [0.2.0] — 2026-08-28
 
 ### Added — live session watch

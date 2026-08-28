@@ -46,6 +46,26 @@ describe('watchdog standalone body', () => {
     expect(WATCHDOG_STANDALONE_BODY).not.toMatch(/pkill|killall/)
   })
 
+  it('does not unref the main-loop tick timer (regression: v0.2.4 self-exit)', () => {
+    // Regression for the v0.2.4 self-exit bug. `.unref()` on the tick
+    // setTimeout left the event loop with no ref'd handle during the
+    // 30 s gap between probes, so Node exited cleanly and launchd's
+    // KeepAlive re-spawned the watchdog in a tight loop.
+    expect(WATCHDOG_STANDALONE_BODY).not.toMatch(
+      /setTimeout\(loop,\s*CFG\.healthIntervalMs\)\.unref\(\)/,
+    )
+    expect(WATCHDOG_STANDALONE_BODY).not.toMatch(
+      /setTimeout\(loop,\s*5000\)\.unref\(\)/,
+    )
+  })
+
+  it('still unrefs the spawned dsh web child process', () => {
+    // The spawned dsh web subprocess should be detached from the
+    // watchdog's event loop via `child.unref()`. This is the one
+    // `.unref()` call that must stay.
+    expect(WATCHDOG_STANDALONE_BODY).toMatch(/child\.unref\(\)/)
+  })
+
   it('exposes a plugin version stamp at runtime', () => {
     // The version helper is sourced from the *plugin* package.json; the body
     // itself is a string and the stamp is injected by `buildWatchdogScript()`.
