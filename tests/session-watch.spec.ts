@@ -173,4 +173,31 @@ describe('installSessionWatch (with agents service)', () => {
     expect(r.ok).toBe(false)
     expect(r.reason).toBe('no-live-agent')
   })
+
+  it('auto-nudges immediately on turn/end:error (regression: QUOTA stalls conversation)', async () => {
+    // When a turn ends with reason.kind === 'error' (e.g. dsh-agent got
+    // a 402 / Insufficient balance from the model provider), the
+    // conversation is effectively stalled: no new events will arrive.
+    // The user (or a doctor nudge) must intervene. dsh-doctor's
+    // session watch now fires the nudge on the same event tick, not
+    // after waiting the full idleThresholdMs.
+    emit({ id: 'sess-1' }, { type: 'turn/start' })
+    emit({ id: 'sess-1' }, { type: 'turn/end', data: { reason: { kind: 'error', error: { code: 'QUOTA', message: 'Insufficient balance' } } } })
+    // The watch is wired to call runIdleCheck synchronously after a
+    // turn/end:error — but runIdleCheck is async, so we await a
+    // microtask flush.
+    await new Promise((r) => setTimeout(r, 5))
+    expect(sentCalls.length).toBeGreaterThanOrEqual(1)
+    const call = sentCalls[0]
+    expect(call.kind).toBe('followup')
+    const text = call.payload.content.find((c: { type: string }) => c.type === 'text')?.text
+    expect(text).toBe('继续')
+  })
+
+  it('does NOT auto-nudge a healthy turn/end:completed', async () => {
+    emit({ id: 'sess-2' }, { type: 'turn/start' })
+    emit({ id: 'sess-2' }, { type: 'turn/end', data: { reason: { kind: 'completed' } } })
+    await new Promise((r) => setTimeout(r, 5))
+    expect(sentCalls.length).toBe(0)
+  })
 })

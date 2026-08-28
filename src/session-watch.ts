@@ -254,6 +254,12 @@ export function installSessionWatch(
         break
     }
     states.set(session.id, s)
+    // If a turn ended with an error, run the idle check immediately so
+    // the failure-nudge path fires within the next tick (default 30s
+    // is too slow when the user is staring at a stalled conversation).
+    if (ev.type === 'turn/end' && ev.data?.reason?.kind === 'error') {
+      void runIdleCheck()
+    }
   })
 
   // ---- idle tick ----
@@ -268,15 +274,23 @@ export function installSessionWatch(
   const runIdleCheck = async (): Promise<void> => {
     const now = Date.now()
     for (const s of states.values()) {
-      // Skip if not running, or recently active, or already nudged recently,
-      // or already at the per-session cap.
-      if (!s.turnRunning) continue
-      if (now - s.lastEventAt < cfg.idleThresholdMs) continue
       if (s.nudgesSent >= cfg.maxNudgesPerSession) continue
       if (s.lastNudgeAt > 0 && now - s.lastNudgeAt < cfg.nudgeCooldownMs) continue
       // Skip if a manual user message arrived after the last event (user
       // is currently driving — don't clobber their input).
       if (s.lastManualUserAt > s.lastEventAt - 5_000) continue
+
+      // Two independent nudge paths:
+      //   (A) FAILURE nudge: a turn ended with reason.kind === 'error'.
+      //       Nudge immediately so an unattended LLM-quota / auth failure
+      //       does not stall the conversation until a human types 继续.
+      //   (B) IDLE nudge: a turn is running but no event has arrived
+      //       for idleThresholdMs (default 3 min). This catches the
+      //       silent-stall case where the agent process is alive but
+      //       emits nothing (network blip, etc.).
+      const failureFresh = s.lastFailure !== null
+      const idleFresh = s.turnRunning && (now - s.lastEventAt) >= cfg.idleThresholdMs
+      if (!failureFresh && !idleFresh) continue
 
       const text = fillTemplate(cfg.continueText, {
         elapsed: now - s.lastEventAt,
@@ -288,8 +302,11 @@ export function installSessionWatch(
         s.nudgesSent += 1
         s.lastNudgeAt = now
         s.lastAutoMessageAt = now
+        const reason = failureFresh
+          ? `failure=${s.lastFailure?.code ?? 'UNKNOWN'}`
+          : `idle ${Math.round((now - s.lastEventAt) / 1000)}s`
         await log.info(
-          `session watch: nudged ${s.sessionId} (idle ${Math.round((now - s.lastEventAt) / 1000)}s, ` +
+          `session watch: nudged ${s.sessionId} (${reason}, ` +
             `nudge ${s.nudgesSent}/${cfg.maxNudgesPerSession}, text="${text}")`,
         ).catch(() => { /* swallow */ })
       } else {
