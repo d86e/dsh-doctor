@@ -359,53 +359,49 @@ async function tick() {
 
   // Diagnose the kind of failure. The platform service (LaunchAgent /
   // systemd / Task Scheduler) owns dsh web's lifecycle — the doctor
-  // does NOT touch it. Instead the doctor observes the failure and
-  // decides whether to:
-  //   (A) Do nothing — the platform service is already restarting
-  //       dsh web, and the next probe will reflect that.
-  //   (B) Intervene — dsh web is alive but stuck (e.g. a plugin
-  //       crashed it but the process is still serving requests with
-  //       500s). Triage the log, disable the bad plugin, then let
-  //       the platform service's next restart pick up the fix.
-  //   (C) Escalate — dsh web is gone AND the platform service has
-  //       not recovered it after 3 probes. This is the broken-plugin
-  //       boot-loop case: dsh web crashes on start, launchd pulls
-  //       it back, it crashes again. Doctor must disable the
-  //       broken plugin or stage safe-mode so the next launchd
-  //       pull can succeed.
+  // does NOT touch it. The doctor observes and reacts within ONE
+  // probe cycle (default 2s, not 30s+90s of previous designs).
+  //
+  // The user-facing latency budget is tight: dsh web serves a GUI,
+  // a human is staring at a stalled or empty screen. We want triage
+  // to fire on the very first sign of trouble.
   const hasPort = await portHasListener(WEB_PORT)
 
   if (!hasPort) {
-    // dsh web process is gone. Do nothing — the platform service
-    // will restart it. If it keeps failing, we'll see a longer
-    // streak of empty-port probes (case C below).
-    log('WARN', 'health probe failed AND port ' + WEB_PORT + ' is empty — letting platform service handle the restart (attempt ' + consecutiveFailures + ')')
-    if (consecutiveFailures < CFG.healthFailuresToRecover) return
-    // 3 consecutive empty-port probes → platform service is in a
-    // crash loop. Triage now.
-    log('WARN', 'platform service failed to recover dsh web after ' + consecutiveFailures + ' attempts — entering crash-loop triage')
+    if (consecutiveFailures === 1) {
+      // First failure with empty port. Give the platform service
+      // ONE fast window (the next probe, 2s away) to recover on
+      // its own. If it does, we'll see the port listening again
+      // and skip triage entirely.
+      log('WARN', 'health probe failed, port ' + WEB_PORT + ' empty — giving platform service 1 probe to recover')
+      return
+    }
+    // 2nd consecutive failure with empty port: platform service
+    // cannot recover dsh web. Triage now.
+    log('WARN', 'platform service failed to recover dsh web after ' + consecutiveFailures + ' probes — entering crash-loop triage')
     if (firstFailureAt === 0) firstFailureAt = Date.now()
     const elapsed = Date.now() - firstFailureAt
     if (recoveryAttempts >= 3 && (Date.now() - lastRecoveryAt) < 5 * 60 * 1000) {
-      log('WARN', 'recovery rate-limited — will retry in 5s')
-      return setTimeout(loop, 5000)
+      log('WARN', 'recovery rate-limited — will retry next tick')
+      return
     }
     return triageAndDisable(elapsed)
   }
 
   // Port has a listener but health probe is failing → dsh web is
-  // alive but broken. Standard triage path.
-  if (consecutiveFailures < CFG.healthFailuresToRecover) {
-    log('WARN', 'health probe failed (' + consecutiveFailures + '/' + CFG.healthFailuresToRecover + ') — dsh web process is up, log triage pending')
-    return
+  // alive but broken. 1 failure is enough — the user is staring at
+  // a stalled GUI; we don't make them wait 90s for a 3-failure
+  // threshold.
+  if (consecutiveFailures === 1) {
+    log('WARN', 'first probe failure with port listening — dsh web alive but broken; reading log for triage')
   }
-  log('WARN', 'dsh web alive but ' + consecutiveFailures + ' consecutive probe failures — triaging now')
   if (firstFailureAt === 0) firstFailureAt = Date.now()
   const elapsed2 = Date.now() - firstFailureAt
   if (recoveryAttempts >= 3 && (Date.now() - lastRecoveryAt) < 5 * 60 * 1000) {
-    log('WARN', 'recovery rate-limited — will retry in 5s')
-    return setTimeout(loop, 5000)
+    log('WARN', 'recovery rate-limited — will retry next tick')
+    return
   }
+  log('WARN', 'triaging dsh web failure now (no ' + CFG.healthFailuresToRecover + '-failure wait — user latency budget)')
   return triageAndDisable(elapsed2)
 }
 

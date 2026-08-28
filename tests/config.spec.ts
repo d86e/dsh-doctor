@@ -36,7 +36,7 @@ describe('Config (schemastery schema)', () => {
     const standard = (Config as any)['~standard']
     const result = standard.validate({})
     expect(result.issues).toBeUndefined()
-    expect(result.value.healthIntervalMs).toBe(30_000)
+    expect(result.value.healthIntervalMs).toBe(2_000)
     expect(result.value.recoveryBudgetMs).toBe(60_000)
   })
 

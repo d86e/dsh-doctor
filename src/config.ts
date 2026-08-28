@@ -66,7 +66,7 @@ export interface Config {
 }
 
 const Defaults: Config = {
-  healthIntervalMs: 30_000,
+  healthIntervalMs: 2_000,
   healthFailuresToRecover: 3,
   recoveryBudgetMs: 60_000,
   logMaxBytes: 5 * 1024 * 1024,
