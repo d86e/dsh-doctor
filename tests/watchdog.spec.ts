@@ -59,6 +59,25 @@ describe('watchdog standalone body', () => {
     )
   })
 
+  it('schedules the next tick via finally (regression: v0.2.6 loop death)', () => {
+    // Regression for the v0.2.6 loop-death bug observed live on macOS:
+    // tick().catch(...).then(setTimeout) silently stopped scheduling new
+    // ticks when tick() returned a never-resolving promise (5 minutes of
+    // 0% CPU on PID 71994). The fix wraps setTimeout in `.finally` so
+    // the next tick is scheduled even when tick() throws synchronously
+    // or returns a hanging promise. We use [\s\S] to match across the
+    // multi-line arrow body.
+    expect(WATCHDOG_STANDALONE_BODY).toMatch(/\.finally\(\s*\(\)\s*=>\s*setTimeout\(run/)
+  })
+
+  it('emits a heartbeat line every N ticks when healthy', () => {
+    // Without the heartbeat, a healthy watchdog is invisible in the log
+    // (it only writes on failure / recovery). The heartbeat makes the
+    // operator's "is the watchdog still alive?" question trivial.
+    expect(WATCHDOG_STANDALONE_BODY).toMatch(/heartbeat/)
+    expect(WATCHDOG_STANDALONE_BODY).toMatch(/HEARTBEAT_EVERY_N_TICKS/)
+  })
+
   it('still unrefs the spawned dsh web child process', () => {
     // The spawned dsh web subprocess should be detached from the
     // watchdog's event loop via `child.unref()`. This is the one
