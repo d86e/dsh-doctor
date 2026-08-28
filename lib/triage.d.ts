@@ -49,6 +49,25 @@ export type ActionPlan = {
     kind: 'no-op';
     reason: string;
     via: 'simple';
+} | {
+    /**
+     * User error — the doctor cannot fix this. Surface to the human.
+     * Examples: Node version too old, disk full, missing binary.
+     * The doctor writes a clear log line and stages no patch; the
+     * human is the only path to recovery.
+     */
+    kind: 'notify-user';
+    reason: string;
+    via: 'complex';
+} | {
+    /**
+     * Cleanup some local state (old logs, stale marker files) and
+     * let the platform service restart dsh web. Used when the log
+     * shows the failure is environmental, not plugin-induced.
+     */
+    kind: 'cleanup-and-restart';
+    reason: string;
+    via: 'complex';
 };
 /** The full pattern table, ordered by `priority` descending at match time. */
 export declare const PATTERNS: readonly Pattern[];
