@@ -137,6 +137,9 @@ const TRANSIENT_PATTERNS: RegExp[] = [
   /\bupstream\b/i,
   /\brate[-_ ]?limit\b/i,
   /\boverload(ed)?\b/i,
+  // Provider-level transient errors (4xx-class but recoverable by retry)
+  /\bPI_AI_ERROR\b/,
+  /\bProvider returned error\b/i,
 ]
 
 const AGENT_PATTERNS: RegExp[] = [
@@ -155,6 +158,13 @@ const AGENT_PATTERNS: RegExp[] = [
   /\bmax[-_ ]?tokens\b/i,
   /\btoo large\b/i,
   /\bnot found\b.*\bmodel\b/i,
+  // Tool-orchestration errors that are *ours* (we made a bad call)
+  // and recoverable by retrying. The agent will re-do the tool call
+  // with the correct path / after reading the file.
+  /\brequires reading\b.*\bfirst\b/i,
+  /\bToolCallError\b/,
+  /\bcannot get property\b.*\bwithout inject\b/i,
+  /\bENOENT\b.*\bnode_modules\b/i,
 ]
 
 export function defaultClassify(ctx: ToolErrorContext): ToolErrorClass {

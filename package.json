@@ -1,6 +1,6 @@
 {
   "name": "@d86e/dsh-doctor",
-  "version": "0.2.15",
+  "version": "0.2.16",
   "description": "dsh-doctor: self-healing watchdog for the DeepSeek Harness web profile. Recovers from plugin-induced boot failures within 60s, captures every tool error, and watches all live sessions for stuck turns.",
   "type": "module",
   "main": "lib/index.js",

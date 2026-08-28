@@ -40,6 +40,20 @@ describe('defaultClassify', () => {
     expect(defaultClassify({ toolName: 't', info: null, message: '404 not found', sessionId: null, agentId: null })).toBe('business')
     expect(defaultClassify({ toolName: 't', info: null, message: 'invalid input', sessionId: null, agentId: null })).toBe('business')
   })
+
+  it('classifies PI_AI_ERROR / Provider returned error as transient (retryable)', () => {
+    expect(defaultClassify({ toolName: 't', info: { name: 'PI_AI_ERROR', code: 'PROVIDER' }, message: 'Provider returned error', sessionId: null, agentId: null })).toBe('transient')
+    expect(defaultClassify({ toolName: 't', info: null, message: 'PI_AI_ERROR: upstream overloaded', sessionId: null, agentId: null })).toBe('transient')
+  })
+
+  it('classifies tool-orchestration errors as agent (our own recoverable mistake)', () => {
+    // "Edit requires reading file first" — the agent forgot to read.
+    expect(defaultClassify({ toolName: 'edit', info: null, message: 'edit requires reading "/Users/admin/foo.js" first — read the file, then retry', sessionId: null, agentId: null })).toBe('agent')
+    // Generic ToolCallError from the tool runtime.
+    expect(defaultClassify({ toolName: 't', info: null, message: 'ToolCallError: something went wrong', sessionId: null, agentId: null })).toBe('agent')
+    // Cordis inject error — doctor own historical bug.
+    expect(defaultClassify({ toolName: 't', info: null, message: 'cannot get property "agents" without inject', sessionId: null, agentId: null })).toBe('agent')
+  })
 })
 
 describe('defaultPolicy', () => {
