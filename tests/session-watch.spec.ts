@@ -132,6 +132,41 @@ describe('installSessionWatch (with agents service)', () => {
     expect(s.turnRunning).toBe(false)
   })
 
+  it('records synthetic failure on turn/end:aborted (unattended: nudge to resume)', () => {
+    emit({ id: 'sess-1' }, { type: 'turn/start' })
+    emit({ id: 'sess-1' }, { type: 'turn/end', data: { reason: { kind: 'aborted' } } })
+    const s = watch.get('sess-1')!
+    expect(s.lastFailure).toEqual({ code: 'TURN_ABORTED', message: 'turn ended with reason.kind=aborted' })
+  })
+
+  it('records synthetic failure on turn/end:interrupted (unattended: nudge to resume)', () => {
+    emit({ id: 'sess-1' }, { type: 'turn/start' })
+    emit({ id: 'sess-1' }, { type: 'turn/end', data: { reason: { kind: 'interrupted' } } })
+    const s = watch.get('sess-1')!
+    expect(s.lastFailure).toEqual({ code: 'TURN_INTERRUPTED', message: 'turn ended with reason.kind=interrupted' })
+  })
+
+  it('records synthetic failure on turn/end:max-tokens (unattended: nudge to resume)', () => {
+    emit({ id: 'sess-1' }, { type: 'turn/start' })
+    emit({ id: 'sess-1' }, { type: 'turn/end', data: { reason: { kind: 'max-tokens' } } })
+    const s = watch.get('sess-1')!
+    expect(s.lastFailure).toEqual({ code: 'TURN_MAX-TOKENS', message: 'turn ended with reason.kind=max-tokens' })
+  })
+
+  it('records synthetic failure on turn/end:blocked (unattended: nudge to resume)', () => {
+    emit({ id: 'sess-1' }, { type: 'turn/start' })
+    emit({ id: 'sess-1' }, { type: 'turn/end', data: { reason: { kind: 'blocked' } } })
+    const s = watch.get('sess-1')!
+    expect(s.lastFailure).toEqual({ code: 'TURN_BLOCKED', message: 'turn ended with reason.kind=blocked' })
+  })
+
+  it('does NOT set a synthetic failure on turn/end:completed (normal exit)', () => {
+    emit({ id: 'sess-1' }, { type: 'turn/start' })
+    emit({ id: 'sess-1' }, { type: 'turn/end', data: { reason: { kind: 'completed' } } })
+    const s = watch.get('sess-1')!
+    expect(s.lastFailure).toBeNull()
+  })
+
   it('resets nudgesSent and lastFailure on turn/end:completed', () => {
     emit({ id: 'sess-1' }, { type: 'turn/start' })
     emit({ id: 'sess-1' }, { type: 'turn/end', data: { reason: { kind: 'error', error: { code: 'X', message: 'X' } } } })
@@ -199,5 +234,31 @@ describe('installSessionWatch (with agents service)', () => {
     emit({ id: 'sess-2' }, { type: 'turn/end', data: { reason: { kind: 'completed' } } })
     await new Promise((r) => setTimeout(r, 5))
     expect(sentCalls.length).toBe(0)
+  })
+
+  it('auto-nudges on turn/end:aborted (unattended operation)', async () => {
+    const sentBefore = sentCalls.length
+    emit({ id: 'sess-1' }, { type: 'turn/start' })
+    emit({ id: 'sess-1' }, { type: 'turn/end', data: { reason: { kind: 'aborted' } } })
+    await new Promise((r) => setTimeout(r, 5))
+    expect(sentCalls.length).toBeGreaterThan(sentBefore)
+    const text = sentCalls[sentBefore].payload.content.find((c: { type: string }) => c.type === 'text')?.text
+    expect(text).toBe('继续')
+  })
+
+  it('auto-nudges on turn/end:interrupted (unattended operation)', async () => {
+    const sentBefore = sentCalls.length
+    emit({ id: 'sess-1' }, { type: 'turn/start' })
+    emit({ id: 'sess-1' }, { type: 'turn/end', data: { reason: { kind: 'interrupted' } } })
+    await new Promise((r) => setTimeout(r, 5))
+    expect(sentCalls.length).toBeGreaterThan(sentBefore)
+  })
+
+  it('auto-nudges on turn/end:max-tokens (unattended operation)', async () => {
+    const sentBefore = sentCalls.length
+    emit({ id: 'sess-1' }, { type: 'turn/start' })
+    emit({ id: 'sess-1' }, { type: 'turn/end', data: { reason: { kind: 'max-tokens' } } })
+    await new Promise((r) => setTimeout(r, 5))
+    expect(sentCalls.length).toBeGreaterThan(sentBefore)
   })
 })
