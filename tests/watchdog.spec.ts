@@ -161,13 +161,21 @@ describe('watchdog standalone body', () => {
 
 describe('generated script', () => {
   let tmpHome: string
+  let savedMaxListeners: number
 
   beforeEach(async () => {
     tmpHome = await fs.mkdtemp(path.join(os.tmpdir(), 'dsh-doctor-test-'))
     process.env.DSH_HOME = tmpHome
+    // Each run of the full body registers process-level SIGINT/SIGTERM/
+    // SIGHUP handlers; without a listener budget the 10th sandbox in this
+    // file emits MaxListenersExceededWarning. Raise the budget for the
+    // lifetime of a test.
+    savedMaxListeners = process.getMaxListeners()
+    process.setMaxListeners(100)
   })
   afterEach(async () => {
     delete process.env.DSH_HOME
+    process.setMaxListeners(savedMaxListeners)
     await fs.rm(tmpHome, { recursive: true, force: true })
   })
 
@@ -476,6 +484,69 @@ describe('generated script', () => {
     } finally {
       delete process.env.DSH_WEB_PORT
     }
+  })
+
+  it('triageAndDisable: EADDRINUSE kills the recorded pid (not a safe-mode downgrade)', async () => {
+    // Before v0.2.28 the highest-priority pattern (kill-pid-and-restart,
+    // pri 100) had no branch in triageAndDisable and fell into the
+    // else -> activateSafeMode fallback: every port-conflict incident
+    // demoted a healthy profile to dsh-core-only. Now the daemon
+    // kills the recorded web pid and let's the platform service
+    // re-pull — and escalates to safe-mode only when the kill itself
+    // fails. Functional test: spawn a real child as the "orphan web",
+    // point .dsh-web.pid at it, feed the body a log with EADDRINUSE.
+    const cp = await import('node:child_process')
+    const orphan = cp.spawn(process.execPath, ['-e', 'setTimeout(()=>{},60000)'], {
+      stdio: 'ignore',
+    })
+    orphan.unref()
+    await new Promise((r) => setImmediate(r))
+    const orphanPid = orphan.pid
+    expect(orphanPid, 'orphan pid').toBeGreaterThan(0)
+
+    void await fs.mkdir(path.join(tmpHome, 'doctor', 'logs'), { recursive: true })
+    void await fs.mkdir(path.join(tmpHome, 'profiles', 'web'), { recursive: true })
+    await fs.writeFile(
+      path.join(tmpHome, 'doctor', 'logs', 'dsh-web.log'),
+      'Error: listen EADDRINUSE: address already in use 127.0.0.1:3080\n',
+    )
+    await fs.writeFile(path.join(tmpHome, 'profiles', 'web', '.dsh-web.pid'), String(orphanPid))
+
+    // eslint-disable-next-line no-new-func
+    const sandbox = new Function('module', 'exports', 'require', WATCHDOG_STANDALONE_BODY + '\nreturn triageAndDisable')
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const triageAndDisable = sandbox({}, {}, require) as (elapsed: number) => void
+
+    triageAndDisable(1000) // elapsed 1s << 60s budget -> kind branch, not budget
+
+    // Give the SIGTERM a beat to land, then verify the orphan is gone
+    // and that NO safe-mode patch was staged (the old fallback).
+    await new Promise((r) => setTimeout(r, 250))
+    let orphanAlive = true
+    try { process.kill(orphanPid, 0) } catch { orphanAlive = false }
+    expect(orphanAlive, 'orphan web pid should have been SIGTERMed').toBe(false)
+    const safePatch = path.join(tmpHome, 'doctor', 'safe-mode.patch.yml')
+    const stat = await fs.stat(safePatch).catch(() => null)
+    expect(stat, 'no safe-mode patch may be staged for a killed port conflict').toBeNull()
+    orphan.kill('SIGKILL')
+  })
+
+  it('triageAndDisable: EADDRINUSE with no recorded pid escalates to safe-mode', async () => {
+    // No .dsh-web.pid at all: killWeb has nothing to kill and the
+    // daemon must escalate to safe-mode so SOMETHING changes.
+    void await fs.mkdir(path.join(tmpHome, 'doctor', 'logs'), { recursive: true })
+    await fs.writeFile(
+      path.join(tmpHome, 'doctor', 'logs', 'dsh-web.log'),
+      'Error: listen EADDRINUSE: address already in use 0.0.0.0:3080\n',
+    )
+    // eslint-disable-next-line no-new-func
+    const sandbox = new Function('module', 'exports', 'require', WATCHDOG_STANDALONE_BODY + '\nreturn triageAndDisable')
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const triageAndDisable = sandbox({}, {}, require) as (elapsed: number) => void
+    triageAndDisable(1000)
+    const safePatch = path.join(tmpHome, 'doctor', 'safe-mode.patch.yml')
+    const stat = await fs.stat(safePatch).catch(() => null)
+    expect(stat, 'safe-mode patch must be staged when the kill has no target').not.toBeNull()
   })
 
   it('singleInstance stamps the start marker that status uses for uptime', async () => {

@@ -5,6 +5,48 @@ All notable changes to `@d86e/dsh-doctor` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.28] — 2026-09-07
+
+### Fixed — the highest-priority triage pattern was a dead branch
+
+`triageAndDisable()` handled `notify-user`, `cleanup-and-restart`,
+`safe-mode` and `disable-row` — but not `kill-pid-and-restart`, the
+action produced by the **highest-priority** pattern (EADDRINUSE, pri
+100, the single most likely incident: an orphan web pid holding the
+port). An unmatched kind fell into the generic `else` →
+`activateSafeMode`, so every port-conflict incident disabled the whole
+profile down to dsh-core when the exact fix — SIGTERM the recorded pid
+and let the platform service re-pull — was available one function away.
+
+- **`src/watchdog.standalone.ts`** — `triageAndDisable` now has a
+  `kill-pid-and-restart` branch: `killWeb()` on the recorded pid, log
+  the success path, and escalate to safe-mode ONLY when the kill
+  itself fails (no recorded pid, already dead pid, EPERM).
+- **tests** — two functional tests run the cooked body's real
+  `triageAndDisable` against a real temp home: (1) a live orphan child
+  is SIGTERMed on EADDRINUSE and **no** safe-mode patch is staged
+  (the old fallback would have staged one); (2) with no `.dsh-web.pid`
+  on disk the daemon escalates to safe-mode so something changes.
+
+### Fixed — ten pushed versions with no git tag
+
+v0.2.18 through v0.2.27 were all committed and pushed, but the
+`git tag vX.Y.Z` step was skipped after v0.2.17. Because the web
+profile pins `@d86e/dsh-doctor` to a **tag** (`github:d86e/dsh-doctor#v0.2.17`),
+the live profile was 13 versions behind main with no way to update to
+the latest — the first time a real `dsh plugin add ...#v0.2.27` ran
+today the gap was discovered (the live healthy-GUI false-positive from
+v0.2.27 was being produced by the v0.2.17 daemon all along). All
+missing tags are now pushed.
+
+### Why
+
+A triage playbook with a kind in the pattern table that no one dispatches
+is a trap: it reads like the pattern is handled, and the fallback it
+actually lands in is the HEAVIEST recovery (safe-mode) instead of the
+lightest one (kill the orphan). The same way the v0.2.25 drift-guard
+pins the table, these two tests pin the dispatch loop.
+
 ## [0.2.27] — 2026-09-07
 
 ### Fixed — the healthy-GUI false positive (probe hit a route that does not exist)
