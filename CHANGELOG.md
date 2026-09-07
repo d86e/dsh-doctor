@@ -5,6 +5,41 @@ All notable changes to `@d86e/dsh-doctor` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.29] — 2026-09-07
+
+### Fixed — the daemon-side safe-mode sentinel regressed the v0.2.20 fix
+
+Safe-mode patch generation is duplicated: buildSafeModePatch in
+src/safe-mode.ts (in-process) and activateSafeMode inside the generated
+standalone daemon (src/watchdog.standalone.ts). The v0.2.20 regression —
+the empty-allow-list sentinel's name field must NOT be dsh-doctor, or
+cordis resolves it to the running plugin and silently turns dsh-doctor
+off — was fixed on the in-process side only. The daemon-side copy still
+carried name: dsh-doctor, so an empty safeModeBundles list (a valid
+config) would re-introduce the exact bug v0.2.20 claimed to have killed,
+but the v0.2.20 regression test asserted only the in-process output and
+let the daemon-side drift sit undetected.
+
+- src/watchdog.standalone.ts — activateSafeMode's sentinel row now uses
+  name: dsh-doctor-safe-mode-sentinel to match the reference
+  buildSafeModePatch.
+- tests — new drift-guard runs the cooked body's real activateSafeMode in
+  a sandbox and asserts the -insert: rows it writes are byte-identical to
+  buildSafeModePatch(list) for every allow-list shape (['dsh-core'],
+  multi-row, empty, ['a','b','c']) — so a future divergence on either side
+  is a red CI run, not the user watching their own plugin's row get
+  clobbered.
+
+### Why
+
+v0.2.25 and v0.2.26 each shipped a drift-guard against a duplicated
+artifact (the PATTERNS table, the config defaults). This is the third
+instance of the same failure mode: a copy of a decision or a format that
+two independent code paths produce, where a fix in one silently leaves
+the other stale. The guards don't eliminate the duplication (the daemon
+has to stay dependency-free) — they turn "drift will happen" into
+"drift will fail a test the moment it happens."
+
 ## [0.2.28] — 2026-09-07
 
 ### Fixed — the highest-priority triage pattern was a dead branch

@@ -543,7 +543,15 @@ function activateSafeMode(allowList) {
     '# Remove this file (or rename to .disabled) to exit safe mode.',
   ].join('\n')
   const rows = allowList.map(function (id) { return '    - id: ' + id + '\n      name: ' + id + '\n      config: {safeMode: true}' })
-  const body = header + '\n- insert:\n' + (rows.length ? rows.join('\n') + '\n' : '    - id: dsh-doctor-safe-mode-sentinel\n      name: dsh-doctor\n      config: {safeModeSentinel: true}\n')
+  // Empty-allow-list sentinel: id AND name must be the sentinel, never
+  // the bare word dsh-doctor — cordis resolves the name to the running
+  // plugin row, so the old name dsh-doctor silently disabled THIS
+  // plugin while safe mode was active (the v0.2.20 bug, which this
+  // copy of the generator re-introduced). buildSafeModePatch in
+  // src/safe-mode.ts is the reference; a test pins the two
+  // byte-for-byte on the rows. (No backticks in this comment: the
+  // whole file is a raw template — a backtick ends the string.)
+  const body = header + '\n- insert:\n' + (rows.length ? rows.join('\n') + '\n' : '    - id: dsh-doctor-safe-mode-sentinel\n      name: dsh-doctor-safe-mode-sentinel\n      config: {safeModeSentinel: true}\n')
   try { fs.writeFileSync(SAFE_MODE, body, { mode: 0o600 }); log('INFO', 'safe-mode patch written: ' + SAFE_MODE) }
   catch (e) { log('ERROR', 'safe-mode write failed: ' + e.message) }
 }

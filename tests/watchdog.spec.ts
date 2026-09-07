@@ -549,6 +549,42 @@ describe('generated script', () => {
     expect(stat, 'safe-mode patch must be staged when the kill has no target').not.toBeNull()
   })
 
+  it('activateSafeMode rows match src/safe-mode.ts buildSafeModePatch byte-for-byte (drift-guard)', async () => {
+    // Third drift surface, found the same way as the PATTERNS and config
+    // ones: safe-mode patch generation is duplicated between the
+    // in-process module and the generated daemon. The copy in the body
+    // re-introduced the v0.2.20 sentinel bug (name: dsh-doctor clobbers
+    // the doctor's own plugin row) after the in-process side was fixed —
+    // and the v0.2.20 regression test asserts only the in-process side,
+    // so the daemon-side copy drifted unseen. The headers legitimately
+    // differ (the daemon stamps activation time); the ROWS must be
+    // byte-identical since cordis resolves them. Pin them for every
+    // allow-list shape we produce.
+    const { buildSafeModePatch } = await import('../src/safe-mode.js')
+
+    void await fs.mkdir(path.join(tmpHome, 'doctor'), { recursive: true })
+    const safeFile = path.join(tmpHome, 'doctor', 'safe-mode.patch.yml')
+    // eslint-disable-next-line no-new-func
+    const sandbox = new Function('module', 'exports', 'require', WATCHDOG_STANDALONE_BODY + '\nreturn activateSafeMode')
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const activateSafeMode = sandbox({}, {}, require) as (list: string[]) => void
+
+    const rowsOf = (text: string): string => text.slice(text.indexOf('- insert:\n') + '- insert:\n'.length)
+
+    for (const list of [['dsh-core'], ['dsh-core', '@scope/dsh-x'], [], ['a', 'b', 'c']]) {
+      activateSafeMode(list)
+      const daemonText = await fs.readFile(safeFile, 'utf8')
+      const refText = buildSafeModePatch(list)
+      expect(rowsOf(daemonText), `daemon rows drifted for allow-list [${list.join(',')}]`).toBe(rowsOf(refText))
+    }
+    // The v0.2.20 sentinel regression, asserted on the DAEMON's output
+    // this time: neither id nor name may be `dsh-doctor`.
+    activateSafeMode([])
+    const sentinelText = await fs.readFile(safeFile, 'utf8')
+    expect(sentinelText).not.toMatch(/name:\s*dsh-doctor\s*\n/m)
+    expect(sentinelText).toMatch(/name:\s*dsh-doctor-safe-mode-sentinel/)
+  })
+
   it('singleInstance stamps the start marker that status uses for uptime', async () => {
     // The status tool's real uptime comes from .doctor-started, written
     // once by singleInstance() at watchdog boot. Run the cooked body in a
