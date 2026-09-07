@@ -5,6 +5,46 @@ All notable changes to `@d86e/dsh-doctor` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.21] — 2026-08-30
+
+### Fixed — tool errors raised via `throw` were silently dropped
+
+- **`src/tool-errors.ts`** — the `tools/execute` waterfall handler only
+  inspected the *returned* result object (`{ isError: true, error }`).
+  The second, equally common failure idiom — `execute()` throwing /
+  rejecting a raw `Error` — bypassed the capture entirely because the
+  `await next()` had no `try/catch`. Every such error was lost from the
+  queue, the log file, and the `dsh_doctor_drain_deferred` tool.
+- **Fix** — wrap `next()` in try/catch; on reject, build a synthetic
+  info object from the thrown error's `name` / `code` (when present),
+  record it through the same classify → policy → queue/log pipeline as
+  the structured path, **and re-throw** so upstream waterfall consumers
+  still see the failure. The refactor also de-duplicates the record
+  code (`recordFailure` helper) shared by both paths.
+- **`tests/tool-errors.spec.ts`** — 2 new regression tests: a plain
+  `reject(new Error(...))` now lands in the queue with the original
+  error still propagating, and a thrown object carrying `name` + `code`
+  records that metadata as `info` (e.g. `HttpError` / `E502` →
+  transient).
+
+### Fixed — stale `lastFailure` leaked across turns in the session watch
+
+- **`src/session-watch.ts`** — `turn/start` now clears
+  `state.lastFailure`. Before, a failure recorded on turn N stayed
+  marked after turn N+1 began, so a *wedged* turn N+1 that tripped the
+  idle path was logged with **turn N's** failure code — misleading when
+  diagnosing which turn actually broke.
+- **`tests/session-watch.spec.ts`** — regression test: failure on
+  turn 1 → `turn/start` → `lastFailure === null`.
+
+### Why
+
+Two "silent drop" bugs with the same shape: failure information that
+should have been visible was lost at a boundary (a thrown rejection that
+was never `catch`ed; a state field that was never cleared at the
+turn-start boundary). In an unattended setup these boundaries are
+exactly where evidence goes missing — now it does not.
+
 ## [0.2.20] — 2026-08-30
 
 ### Added — watchdog liveness timestamp in `dsh_doctor_status`

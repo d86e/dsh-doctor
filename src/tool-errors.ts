@@ -218,50 +218,93 @@ export function installToolErrorCapture(
   const toolErrLog = new DoctorLog({ file, maxBytes: cfg.logMaxBytes, backups: cfg.logBackups })
   let installed = false
 
+  // Helper: classify + record a single failure for a given exec object.
+  // Two shapes of failure are supported:
+  //   (a) next() returned   { isError: true, error: { … } }   — the
+  //       "structured result" path used by dsh-tools's tool wrappers.
+  //   (b) next() threw / rejected — the "raw throw" path used by
+  //       plugins that `throw Error('…')` directly out of their
+  //       execute() body. Both are valid dsh tool-failure idioms and
+  //       both must be recorded; (b) was silently dropped before v0.2.21.
+  const recordFailure = async (
+    exec: unknown,
+    errorMessage: string,
+    info: { name: string; code: string } | null,
+  ): Promise<void> => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const e = exec as { name?: string; sessionId?: string; agent?: { id?: string } | string }
+    const toolName = e.name ?? 'unknown'
+    const sessionId = e.sessionId ?? null
+    const agentId = e.agent
+      ? typeof e.agent === 'string'
+        ? e.agent
+        : (e.agent.id ?? null)
+      : null
+    const c: ToolErrorContext = { toolName, info, message: errorMessage, sessionId, agentId }
+    const userKlass = classifier ? classifier(c) : null
+    const klass = (userKlass ?? defaultClassify(c)) as ToolErrorClass
+    const p = (policy ?? defaultPolicy)(c, klass)
+    const entry: ToolErrorEntry = {
+      ts: new Date().toISOString(),
+      toolName,
+      klass,
+      message: errorMessage,
+      info,
+      sessionId,
+      agentId,
+      policy: p.defer ? 'deferred' : p.record ? 'recorded' : 'silenced',
+    }
+    if (p.record) {
+      queue.push(entry)
+      total++
+      if (p.log) {
+        await toolErrLog.write(
+          'WARN',
+          `[${klass}] ${toolName} session=${sessionId ?? '-'} agent=${agentId ?? '-'} ${errorMessage}`,
+        )
+      }
+      await log.debug(`tool error captured: ${toolName} → ${klass} (${entry.policy})`)
+    }
+  }
+
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const offExecute = (ctx as any).on?.('tools/execute', async (exec: unknown, next: () => Promise<unknown>) => {
-    const result = await next()
-    // Inspect the result; if it's a failure, classify and record.
+    let result: unknown
+    let threw = false
+    try {
+      result = await next()
+    } catch (e) {
+      // Path (b): next() rejected / threw. Record it, then re-throw so
+      // the waterfall upstream still sees the failure.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const err = e as { name?: string; message?: string; code?: string }
+      const errorMessage = err?.message ?? String(e)
+      const info: { name: string; code: string } | null =
+        err && typeof err === 'object' && (err.name !== undefined || err.code !== undefined)
+          ? { name: String(err.name ?? ''), code: String(err.code ?? '') }
+          : null
+      try {
+        await recordFailure(exec, errorMessage, info)
+      } catch (recErr) {
+        // Recording must never mask the original error.
+        void log.warn(`tool error capture (throw path) failed: ${(recErr as Error).message}`)
+      }
+      threw = true
+      throw e
+    }
+    if (threw) return result // unreachable; satisfies the type checker
+
+    // Path (a): next() returned a structured result.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const r: any = result
     if (r && typeof r === 'object' && r.isError === true && r.error) {
-      const toolName = (exec as { name?: string }).name ?? 'unknown'
-      const info = r.error.info && typeof r.error.info === 'object'
-        ? { name: String(r.error.info.name ?? ''), code: String(r.error.info.code ?? '') }
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const re: any = r.error
+      const info = re.info && typeof re.info === 'object'
+        ? { name: String(re.info.name ?? ''), code: String(re.info.code ?? '') }
         : null
-      const message = typeof r.error.message === 'string' ? r.error.message : String(r.error)
-      const sessionId = (exec as { sessionId?: string }).sessionId ?? null
-      const agentId = (exec as { agent?: { id?: string } | string }).agent
-        ? typeof (exec as { agent?: { id?: string } | string }).agent === 'string'
-          ? ((exec as { agent: string }).agent)
-          : ((exec as { agent: { id?: string } }).agent.id ?? null)
-        : null
-
-      const c: ToolErrorContext = { toolName, info, message, sessionId, agentId }
-      const userKlass = classifier ? classifier(c) : null
-      const klass = (userKlass ?? defaultClassify(c)) as ToolErrorClass
-      const p = (policy ?? defaultPolicy)(c, klass)
-      const entry: ToolErrorEntry = {
-        ts: new Date().toISOString(),
-        toolName,
-        klass,
-        message,
-        info,
-        sessionId,
-        agentId,
-        policy: p.defer ? 'deferred' : p.record ? 'recorded' : 'silenced',
-      }
-      if (p.record) {
-        queue.push(entry)
-        total++
-        if (p.log) {
-          await toolErrLog.write(
-            'WARN',
-            `[${klass}] ${toolName} session=${sessionId ?? '-'} agent=${agentId ?? '-'} ${message}`,
-          )
-        }
-        await log.debug(`tool error captured: ${toolName} → ${klass} (${entry.policy})`)
-      }
+      const message = typeof re.message === 'string' ? re.message : String(re)
+      await recordFailure(exec, message, info)
     }
     return result
   })

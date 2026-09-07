@@ -195,6 +195,43 @@ describe('installToolErrorCapture (mock cordis context)', () => {
     capture.dispose()
   })
 
+  it('records a tool error when the execute waterfall THROWS (not just returns isError)', async () => {
+    // Regression v0.2.21: many plugin tools raise with a plain
+    // `throw new Error(...)` inside execute(). The old capture only
+    // inspected the returned result object and had no try/catch, so
+    // every thrown error was silently dropped from the queue.
+    const capture = installToolErrorCapture(fakeCtx as never, Config, log)
+    const handler = emitter.listeners('tools/execute')[0] as (...args: unknown[]) => Promise<unknown>
+    const boom = new Error('ENOENT: no such file, open \'/tmp/x.txt\'')
+    await expect(
+      handler({ name: 'read', sessionId: 's1' }, async () => Promise.reject(boom)),
+    ).rejects.toBe(boom) // the original error must still propagate
+    const summary = readSummary(capture, 60_000)
+    expect(summary.total).toBe(1)
+    const entries = capture.queue.drain('s1', 10)
+    expect(entries.length).toBe(1)
+    expect(entries[0].toolName).toBe('read')
+    expect(entries[0].message).toBe("ENOENT: no such file, open '/tmp/x.txt'")
+    // A thrown ENOENT inside node_modules context is agent-class; a
+    // bare file-missing message classifies per the default table.
+    expect(['transient', 'agent', 'business']).toContain(entries[0].klass)
+    capture.dispose()
+  })
+
+  it('records the error name/code of a thrown object as info', async () => {
+    const capture = installToolErrorCapture(fakeCtx as never, Config, log)
+    const handler = emitter.listeners('tools/execute')[0] as (...args: unknown[]) => Promise<unknown>
+    const err = Object.assign(new Error('upstream blew up'), { name: 'HttpError', code: 'E502' })
+    await expect(
+      handler({ name: 'fetch', sessionId: 's1' }, async () => Promise.reject(err)),
+    ).rejects.toBe(err)
+    const entries = capture.queue.drain('s1', 10)
+    expect(entries.length).toBe(1)
+    expect(entries[0].info).toEqual({ name: 'HttpError', code: 'E502' })
+    expect(entries[0].klass).toBe('transient') // 5xx-class → retryable
+    capture.dispose()
+  })
+
   it('drain() pulls entries by sessionId', async () => {
     const capture = installToolErrorCapture(fakeCtx as never, Config, log)
     const handler = emitter.listeners('tools/execute')[0] as (...args: unknown[]) => Promise<unknown>

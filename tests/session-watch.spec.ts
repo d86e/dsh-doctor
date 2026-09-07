@@ -184,6 +184,18 @@ describe('installSessionWatch (with agents service)', () => {
     expect(watch.get('sess-1')!.nudgesSent).toBe(0)
   })
 
+  it('clears lastFailure on turn/start (a new turn supersedes the previous failure)', () => {
+    // Regression: before v0.2.21 a stale failure from turn N stayed
+    // marked after turn N+1 started, so a wedged turn N+1 would be
+    // reported with turn N's failure code in the nudge log line.
+    // turn/start must mark the previous failure as history.
+    emit({ id: 'sess-1' }, { type: 'turn/start' })
+    emit({ id: 'sess-1' }, { type: 'turn/end', data: { reason: { kind: 'error', error: { code: 'ETIMEDOUT', message: 'upstream timeout' } } } })
+    expect(watch.get('sess-1')!.lastFailure).not.toBeNull()
+    emit({ id: 'sess-1' }, { type: 'turn/start' })
+    expect(watch.get('sess-1')!.lastFailure).toBeNull()
+  })
+
   it('manual nudge sends a followup with the expected text', () => {
     emit({ id: 'sess-1' }, { type: 'turn/start' })
     const r = watch.nudge('sess-1', '请继续')
