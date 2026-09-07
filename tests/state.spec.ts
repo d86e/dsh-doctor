@@ -10,6 +10,7 @@ import {
   tailFile,
   pidAlive,
   readWebPid,
+  logPath,
   StatePaths,
 } from '../src/state.js'
 
@@ -82,5 +83,12 @@ describe('state helpers', () => {
     await fs.mkdir(path.dirname(p), { recursive: true })
     await fs.writeFile(p, '1234\n')
     expect(await readWebPid()).toBe(1234)
+  })
+
+  it('logPath maps each kind to the right doctor-managed file', () => {
+    expect(logPath('web')).toBe(path.join(tmpHome, 'doctor', 'logs', 'dsh-web.log'))
+    expect(logPath('watchdog')).toBe(StatePaths.watchdogLog())
+    expect(logPath('doctor')).toBe(StatePaths.doctorLog())
+    expect(logPath('tool-errors')).toBe(path.join(tmpHome, 'doctor', 'logs', 'tool-errors.log'))
   })
 })

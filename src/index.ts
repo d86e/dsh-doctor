@@ -34,6 +34,8 @@ import {
   tailFile,
   pidAlive,
   writeFileAtomic,
+  logPath,
+  type DoctorLogKind,
 } from './state.js'
 import { satisfiesCaret, TESTED_PEER_RANGE } from './version.js'
 import { DoctorLog } from './doctor-log.js'
@@ -495,6 +497,50 @@ export function apply(ctx: Context, config: ConfigT): void {
           reason: d.reason,
           plan: d.plan,
           logLines: lines.length,
+        }
+      }),
+    }),
+  )
+
+  // ---- dsh_doctor_recent_log (NEW in 0.2.18) ----
+  // The doctor writes to four log files (web, watchdog, doctor,
+  // tool-errors). Before this tool existed, the only way for an agent
+  // (or a human via the GUI) to see what the doctor actually did was to
+  // tail the file system manually. Now you can pull the recent tail of
+  // any of them in one tool call.
+  harness.registerTool(
+    ctx,
+    defineTool({
+      name: 'dsh_doctor_recent_log',
+      description:
+        'Return the last N lines of one of the doctor-managed log files. ' +
+        'Useful when you want to see exactly what the watchdog did without ' +
+        'opening a shell. Defaults: kind=watchdog, lines=100.',
+      parameters: {
+        kind: {
+          type: 'string',
+          description: 'Which log: "web" (dsh web stdout), "watchdog" (standalone), "doctor" (in-process), "tool-errors".',
+          default: 'watchdog',
+        },
+        lines: { type: 'number', description: 'How many of the most recent lines to return. 1-2000. Defaults to 100.', default: 100 },
+      },
+      output: JSON_OUTPUT,
+      execute: execBody(async (args, _exec) => {
+        const raw = String(args.kind ?? 'watchdog')
+        const allowed: DoctorLogKind[] = ['web', 'watchdog', 'doctor', 'tool-errors']
+        if (!allowed.includes(raw as DoctorLogKind)) {
+          return { ok: false, reason: `unknown kind "${raw}"`, lines: [] as string[] }
+        }
+        const kind = raw as DoctorLogKind
+        const n = Math.max(1, Math.min(2_000, Number(args.lines ?? 100)))
+        const file = logPath(kind)
+        const lines = await tailFile(file, n)
+        return {
+          ok: true,
+          kind,
+          path: file,
+          lines,
+          count: lines.length,
         }
       }),
     }),

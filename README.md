@@ -349,7 +349,7 @@ If the default classification (network/5xx/429 → `transient`, 401/403/quota/co
 
 ## Tools
 
-12 model-facing tools, all `dsh_doctor_*` prefixed.
+13 model-facing tools, all `dsh_doctor_*` prefixed.
 
 | Tool | Purpose |
 | --- | --- |
@@ -359,6 +359,7 @@ If the default classification (network/5xx/429 → `transient`, 401/403/quota/co
 | `dsh_doctor_pause` | Stop recovery, keep probing |
 | `dsh_doctor_resume` | Re-enable recovery |
 | `dsh_doctor_diagnose` | One-shot triage, no writes |
+| `dsh_doctor_recent_log` | Tail one of the doctor-managed logs (web / watchdog / doctor / tool-errors) |
 | `dsh_doctor_safe_mode_enter` | Manually drop a safe-mode patch |
 | `dsh_doctor_safe_mode_exit` | Remove the safe-mode patch |
 | `dsh_doctor_drain_deferred` | Pull queued agent-class tool errors for a session |

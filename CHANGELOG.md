@@ -5,6 +5,28 @@ All notable changes to `@d86e/dsh-doctor` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.19] — 2026-08-30
+
+### Added — `dsh_doctor_recent_log` tool
+
+- **`src/state.ts`** — new `logPath(kind)` helper + `DoctorLogKind`
+  union (`'web' | 'watchdog' | 'doctor' | 'tool-errors'`). One source of
+  truth for "where is this log written?".
+- **`src/index.ts`** — new 13th model-facing tool,
+  `dsh_doctor_recent_log(kind, lines)`. Returns the last N lines
+  (1–2000, default 100) of the named log. Before this tool the only
+  way for an agent to inspect what the doctor had been doing was to
+  shell out and tail the file; now one tool call gets you the tail.
+
+### Why
+
+The most common follow-up after `dsh_doctor_status` is "but why did it
+do that?" — without `recent_log` the agent had to guess, or open a
+shell it may not have permission to use. The four logs cover the four
+distinct subsystems: dsh web's own stdout, the standalone watchdog's
+recovery decisions, the in-process doctor's diagnostic stream, and
+the per-tool-error JSONL log.
+
 ## [0.2.18] — 2026-08-30
 
 ### Added — configurable triage log window

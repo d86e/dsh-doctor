@@ -45,4 +45,15 @@ export declare function tailFile(p: string, maxLines: number): Promise<string[]>
 export declare function pidAlive(pid: number): boolean;
 /** Read the DSH web pid from the profile directory, if present. */
 export declare function readWebPid(): Promise<number | null>;
+/**
+ * Known log files managed by the doctor. Used by `dsh_doctor_recent_log`.
+ *
+ * `web`     — dsh web's own stdout/stderr (the thing triage reads from)
+ * `watchdog` — the standalone watchdog's diagnostic log
+ * `doctor`  — the in-process doctor's diagnostic log (captures tool errors, watch events)
+ * `tool-errors` — the JSONL-ish log of every classified tool error
+ */
+export type DoctorLogKind = 'web' | 'watchdog' | 'doctor' | 'tool-errors';
+/** Map a log kind to its absolute path. */
+export declare function logPath(kind: DoctorLogKind): string;
 //# sourceMappingURL=state.d.ts.map

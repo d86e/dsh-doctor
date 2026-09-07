@@ -123,3 +123,23 @@ export async function readWebPid(): Promise<number | null> {
   const n = Number(content.trim())
   return Number.isInteger(n) && n > 0 ? n : null
 }
+
+/**
+ * Known log files managed by the doctor. Used by `dsh_doctor_recent_log`.
+ *
+ * `web`     — dsh web's own stdout/stderr (the thing triage reads from)
+ * `watchdog` — the standalone watchdog's diagnostic log
+ * `doctor`  — the in-process doctor's diagnostic log (captures tool errors, watch events)
+ * `tool-errors` — the JSONL-ish log of every classified tool error
+ */
+export type DoctorLogKind = 'web' | 'watchdog' | 'doctor' | 'tool-errors'
+
+/** Map a log kind to its absolute path. */
+export function logPath(kind: DoctorLogKind): string {
+  switch (kind) {
+    case 'web':         return path.join(doctorBase(), 'doctor', 'logs', 'dsh-web.log')
+    case 'watchdog':    return StatePaths.watchdogLog()
+    case 'doctor':      return StatePaths.doctorLog()
+    case 'tool-errors': return path.join(doctorBase(), 'doctor', 'logs', 'tool-errors.log')
+  }
+}
