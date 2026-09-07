@@ -69,6 +69,18 @@ const PATCH_F    = path.join(PROFILE_DIR, 'cordis.patch.yml')
 const WEB_PID    = path.join(PROFILE_DIR, '.dsh-web.pid')
 const LOG_MAX    = 5 * 1024 * 1024
 const LOG_BACKUPS= 3
+// Boot budget: how long an EMPTY web port may persist before we call it
+// a crash loop instead of a cold boot. Observed dsh web cold boots run
+// ~14s on this host, so 2 probes (≈4s) was far too aggressive and kept
+// demoting healthy boots to safe-mode. 30s leaves comfortable headroom
+// for a slow first-boot without meaningfully delaying a real crash
+// verdict (the platform service's own restart cadence is longer still).
+// Overridable via DSH_DOCTOR_BOOT_BUDGET_MS so a test can pump the
+// budget in a few seconds instead of a real ~30s.
+const BOOT_BUDGET_MS = (function () {
+  const v = Number(process.env.DSH_DOCTOR_BOOT_BUDGET_MS)
+  return Number.isFinite(v) && v > 0 ? v : 30000
+})()
 
 let CFG = {
   // NOTE: these four values must equal Defaults in src/config.ts — the
@@ -615,19 +627,30 @@ async function tick() {
   const hasPort = await portHasListener(WEB_PORT)
 
   if (!hasPort) {
-    if (consecutiveFailures === 1) {
-      // First failure with empty port. Give the platform service
-      // ONE fast window (the next probe, 2s away) to recover on
-      // its own. If it does, we'll see the port listening again
-      // and skip triage entirely.
-      log('WARN', 'health probe failed, port ' + WEB_PORT + ' empty — giving platform service 1 probe to recover')
+    // First observed empty port. A fresh dsh web cold boot can take
+    // well over a second here (observed ~14s), so do NOT triage on the
+    // first or second empty probe — that misread a legitimate boot as a
+    // crash loop and staged safe-mode a half-dozen times mid-boot.
+    if (firstFailureAt === 0) {
+      firstFailureAt = Date.now()
+      log('WARN', 'health probe failed, port ' + WEB_PORT + ' empty — started boot-watch')
+    }
+    const elapsed = Date.now() - firstFailureAt
+    // Give the platform service a full boot budget before calling this
+    // a crash. A single probe interval (2s) is nowhere near the actual
+    // dsh web startup time on this host, so 2 consecutive empty probes
+    // is NOT enough.
+    if (elapsed < BOOT_BUDGET_MS) {
+      // Quiet while under budget: one line at 1/4 and 1/2 of the budget
+      // so the log shows we are waiting, without spamming.
+      if (elapsed >= BOOT_BUDGET_MS / 4 && tickCount % 5 !== 0) {
+        log('WARN', 'port still empty after ' + Math.round(elapsed / 1000) + 's — within boot budget, waiting')
+      }
       return
     }
-    // 2nd consecutive failure with empty port: platform service
-    // cannot recover dsh web. Triage now.
-    log('WARN', 'platform service failed to recover dsh web after ' + consecutiveFailures + ' probes — entering crash-loop triage')
-    if (firstFailureAt === 0) firstFailureAt = Date.now()
-    const elapsed = Date.now() - firstFailureAt
+    // Past the boot budget with nothing listening: a real crash loop
+    // (or the platform service gave up). Triage now.
+    log('WARN', 'port empty for ' + Math.round(elapsed / 1000) + 's (' + consecutiveFailures + ' probes) — entering crash-loop triage')
     if (recoveryAttempts >= 3 && (Date.now() - lastRecoveryAt) < 5 * 60 * 1000) {
       log('WARN', 'recovery rate-limited — will retry next tick')
       return

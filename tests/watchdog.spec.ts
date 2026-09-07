@@ -48,6 +48,24 @@ describe('watchdog standalone body', () => {
     expect(WATCHDOG_STANDALONE_BODY).not.toMatch(/pkill|killall/)
   })
 
+  it('no comment line contains a bare backtick (raw-template invariant)', () => {
+    // The whole body is a String.raw tagged template — one backtick ANYWHERE
+    // inside it (outside its regex escapes) would close the string early and
+    // the rest of the body becomes top-level TS that esbuild refuses to
+    // parse. A bare backtick on a // comment line is the classic way this
+    // got broken (v0.2.22 node-version comment, v0.2.27 probePath comment,
+    // v0.2.29 boot-budget comment — all fixed by hand each time). The
+    // legitimate bare backtick that lives inside the body (`[ \x60 ' " ])
+    // sits in a regex literal, not a comment, so asserting no backtick on
+    // comment lines is safe and catches the recurring failure mode.
+    const lines = WATCHDOG_STANDALONE_BODY.split('\n')
+    const offenders = lines
+      .map((l, i) => [l, i] as const)
+      .filter(([l]) => l.trimStart().startsWith('//'))
+      .filter(([l]) => l.includes('`'))
+    expect(offenders.map(([, i]) => `line ${i + 1}: ${lines[i]}`)).toEqual([])
+  })
+
   it('does not unref the main-loop tick timer (regression: v0.2.4 self-exit)', () => {
     // Regression for the v0.2.4 self-exit bug. `.unref()` on the tick
     // setTimeout left the event loop with no ref'd handle during the
@@ -583,6 +601,70 @@ describe('generated script', () => {
     const sentinelText = await fs.readFile(safeFile, 'utf8')
     expect(sentinelText).not.toMatch(/name:\s*dsh-doctor\s*\n/m)
     expect(sentinelText).toMatch(/name:\s*dsh-doctor-safe-mode-sentinel/)
+  })
+
+  it('BOOT_BUDGET_MS defaults to 30s and honors the env override', () => {
+    // 30s matches a real dsh web cold boot (~14s) with headroom, and a
+    // DSH_DOCTOR_BOOT_BUDGET_MS override lets a test pump the budget
+    // in seconds instead of waiting out 30s of wall time.
+    const before = process.env.DSH_DOCTOR_BOOT_BUDGET_MS
+    // eslint-disable-next-line no-new-func
+    const mk = () => new Function('module', 'exports', 'require', WATCHDOG_STANDALONE_BODY + '\nreturn BOOT_BUDGET_MS')({}, {}, require)
+    delete process.env.DSH_DOCTOR_BOOT_BUDGET_MS
+    expect(mk()).toBe(30000)
+    process.env.DSH_DOCTOR_BOOT_BUDGET_MS = '1500'
+    expect(mk()).toBe(1500)
+    process.env.DSH_DOCTOR_BOOT_BUDGET_MS = 'garbage'
+    expect(mk()).toBe(30000)
+    if (before === undefined) delete process.env.DSH_DOCTOR_BOOT_BUDGET_MS
+    else process.env.DSH_DOCTOR_BOOT_BUDGET_MS = before
+  })
+
+  it('empty port within the boot budget does NOT trip crash-loop triage (live-bug regression)', async () => {
+    // Observed live: a legitimate `dsh web` cold boot (~14s on this
+    // host) was verdicted a crash loop at 2 empty probes (~4s) — the
+    // daemon staged safe-mode three times while the web was still
+    // booting. Now the empty-port branch runs on ELAPSED TIME against
+    // a boot budget, not a fixed probe count.
+    const netMod = await import('node:net')
+    const listener = netMod.createServer()
+    await new Promise<void>((r) => listener.listen(0, '127.0.0.1', r))
+    const addr = listener.address()
+    const port = typeof addr === 'object' && addr !== null ? addr.port : 0
+    await new Promise<void>((r) => listener.close(() => r()))
+    if (port === 0) throw new Error('no free port')
+    process.env.DSH_WEB_PORT = String(port)
+    // Pump the budget into ~1.5s wall instead of 30s so the suite stays
+    // fast. Without it the tight tick loop (~5ms/tick) exhausts its
+    // iteration cap long before the 30s budget elapses, so the test
+    // never reaches the "after budget" branch and silently passes.
+    process.env.DSH_DOCTOR_BOOT_BUDGET_MS = '1500'
+
+    // tick() hard-exits if the install marker is missing — write it
+    // first (same shape as dsh_doctor_install does).
+    await fs.mkdir(path.join(tmpHome, 'doctor', 'logs'), { recursive: true })
+    await fs.writeFile(path.join(tmpHome, 'doctor', '.doctor-installed'), '{}')
+    // eslint-disable-next-line no-new-func
+    const sandbox = new Function('module', 'exports', 'require', WATCHDOG_STANDALONE_BODY + '\nreturn { tick }')
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const api = sandbox({}, {}, require) as { tick: () => Promise<void> }
+
+    const safePatch = path.join(tmpHome, 'doctor', 'safe-mode.patch.yml')
+    // A few ticks well inside the 1.5s budget must NOT stage anything.
+    for (let i = 0; i < 3; i++) await api.tick()
+    expect(await fs.stat(safePatch).catch(() => null), 'no safe-mode patch inside budget').toBeNull()
+
+    // Once past the budget, an empty port is a crash: keep ticking
+    // until the triage action lands (empty log, no pattern match ->
+    // safe-mode) or the cap trips, whichever comes first.
+    const start = Date.now()
+    while (Date.now() - start < 6000) {
+      await api.tick()
+      if ((await fs.stat(safePatch).catch(() => null)) !== null) break
+    }
+    expect(await fs.stat(safePatch).catch(() => null), 'safe-mode patch after budget').not.toBeNull()
+    delete process.env.DSH_WEB_PORT
+    delete process.env.DSH_DOCTOR_BOOT_BUDGET_MS
   })
 
   it('singleInstance stamps the start marker that status uses for uptime', async () => {

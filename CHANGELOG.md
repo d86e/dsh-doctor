@@ -5,6 +5,43 @@ All notable changes to `@d86e/dsh-doctor` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.30] — 2026-09-07
+
+### Fixed — crash-loop triage fired mid-boot, demoting a healthy dsh-web boot to safe-mode
+
+The empty-port branch declared a crash after 2 consecutive probes
+(~4s) with nothing listening on the web port. On this host a *legitimate*
+dsh web cold boot runs well past that — observed 09:12:16 kill,
+09:12:30 healthy — so the daemon staged safe-mode three times while the
+web was still legitimately starting, reading a clean log that matched
+nothing and falling through to the no-match safe-mode fallback. A
+healthy profile got demoted to dsh-core-only every slow boot.
+
+- src/watchdog.standalone.ts — the empty-port branch now runs on
+  elapsed time against a boot budget (BOOT_BUDGET_MS, default 30s,
+  overridable via DSH_DOCTOR_BOOT_BUDGET_MS) instead of a fixed
+  2-probe count. Under budget it stays quiet (one log line near a
+  quarter-budget mark); past budget it logs the real elapsed seconds
+  and probes count and triages as before. firstFailureAt already
+  resets on a healthy probe, so the budget is measured per boot
+  window, not since install.
+- tests — a budget default/override test (asserts the 30s default and
+  that DSH_DOCTOR_BOOT_BUDGET_MS wins) plus a live-bug regression
+  functional test: a free port is listened-on-then-closed at start, the
+  cooked body is driven in a sandbox for a few ticks inside the budget
+  (no safe-mode staged) and then past it (safe-mode staged). The
+  sandbox uses the 1.5s budget so the regression runs in ~1.5s of wall.
+
+### Why
+
+This is the "probe an imagined API" bug family (v0.2.27 /health 404)
+in its twin form: a threshold imagined to be a real bound when it is
+only a count. 2 probes is a number that meant "the platform service had
+enough chances to restart" — but the platform service's actual restart
+latency is in seconds, not probe intervals. The budget is that real
+restart time stated in the same units as the clock the daemon already
+reads, so "crash" and "boot" can no longer be confused by a slow start.
+
 ## [0.2.29] — 2026-09-07
 
 ### Fixed — the daemon-side safe-mode sentinel regressed the v0.2.20 fix
