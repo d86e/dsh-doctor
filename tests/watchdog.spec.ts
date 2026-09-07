@@ -70,6 +70,48 @@ describe('watchdog standalone body', () => {
     expect(WATCHDOG_STANDALONE_BODY).toMatch(/\.finally\(\s*\(\)\s*=>\s*setTimeout\(run/)
   })
 
+  it('every inline triage pattern really matches its log line (cooked-body regression)', () => {
+    // Regression v0.2.22: the body was a `String\`...\`` tagged template,
+    // which ESCAPE-COOKS its contents — \s became s, \d became d, \.
+    // became . — so the generated watchdog's triage regexes were broken
+    // even though the whole body still parsed. Five of the twelve
+    // patterns silently fell through to safe-mode. We run the COOKED
+    // body's own triage() against one realistic log line per pattern:
+    // if cooking ever breaks again, one of these will fail.
+    // eslint-disable-next-line no-new-func
+    const start = WATCHDOG_STANDALONE_BODY.indexOf('const PATTERNS')
+    const end = WATCHDOG_STANDALONE_BODY.indexOf('function probe()')
+    if (start < 0 || end < 0) throw new Error('PATTERNS section not found in body')
+    const mod = { exports: {} as Record<string, unknown> }
+    // eslint-disable-next-line no-new-func
+    new Function('module', 'exports', WATCHDOG_STANDALONE_BODY.slice(start, end) + '\nmodule.exports = { PATTERNS, triage };')(mod, mod.exports)
+    const triage = mod.exports.triage as (lines: string[]) => { kind: string; id?: string; matched: string | null }
+
+    const fixtures: Array<[string, string, string, string | null]> = [
+      ['EADDRINUSE', 'Error: listen EADDRINUSE: address already in use 127.0.0.1:3080', 'kill-pid-and-restart', null],
+      ['duplicate-loader', 'duplicate loader entry id: dsh-foo-bar', 'disable-row', 'dsh-foo-bar'],
+      ['schema-parse', 'Schema parse error in @scope/bad-pkg: invalid value for field x', 'disable-row', '@scope/bad-pkg'],
+      ['cannot-find-module', "Error: Cannot find module 'some-pkg'", 'disable-row', 'some-pkg'],
+      ['plugin-load-error', 'Error loading plugin @scope/dsh-broken', 'disable-row', '@scope/dsh-broken'],
+      ['node-version', 'Requires Node ^20.0.0 but dsh ships v18.19.0', 'notify-user', null],
+      ['disk-full', 'ENOSPC: no space left on device', 'notify-user', null],
+      ['corrupt-patch-yaml', 'YAML parse error in cordis.patch.yml: unexpected token', 'cleanup-and-restart', null],
+      ['cordis-schema-validate', "Cannot read properties of undefined (reading 'validate')", 'safe-mode', null],
+      ['pnpm-peer', 'ERESOLVE could not resolve: @scope/dsh-conflict@1.0.0 peer dep conflict', 'disable-row', '@scope/dsh-conflict'],
+      ['plugin-export-missing', 'Plugin dsh-x did not export name and apply', 'disable-row', 'dsh-x'],
+      ['plugin-file-missing', "ENOENT: no such file, open '/Users/x/node_modules/@scope/dsh-missing/lib/index.js'", 'disable-row', '@scope/dsh-missing'],
+      ['no-match', 'some completely unknown failure text', 'safe-mode', null],
+    ]
+    for (const [label, input, expectedKind, expectedId] of fixtures) {
+      let plan: { kind: string; id?: string; matched: string | null } | null = null
+      let err: Error | null = null
+      try { plan = triage([input]) } catch (e) { err = e as Error }
+      expect(err, label + ' threw').toBeNull()
+      expect(plan!.kind, label + ': kind').toBe(expectedKind)
+      if (expectedId !== null) expect(plan!.id, label + ': id').toBe(expectedId)
+    }
+  })
+
   it('stamps the last-tick marker on every tick (for dsh_doctor_status liveness)', () => {
     // The status tool reads `.doctor-last-tick` to answer "is the
     // watchdog alive AND actually ticking?" — a live pid alone is not
@@ -139,6 +181,99 @@ describe('generated script', () => {
     // does not execute the body, so it's safe to run in tests.
     // eslint-disable-next-line no-new-func
     expect(() => new Function(text)).not.toThrow()
+  })
+
+  it('stageDisableRow prunes the matching row from cordis.patch.yml (functional)', async () => {
+    // Regression v0.2.22: pre-fix, the "simple path" only wrote a sibling
+    // marker file (cordis.patch.yml.doctor-disabled-<id>) that NOTHING
+    // consumed — dsh web booted the un-pruned patch, the broken row still
+    // mounted, and the incident re-tripped until safe-mode took over. Now
+    // the broken row must actually be removed from the patch itself.
+    const profileDir = path.join(tmpHome, 'profiles', 'web')
+    await fs.mkdir(profileDir, { recursive: true })
+    const patchFile = path.join(profileDir, 'cordis.patch.yml')
+    const original = [
+      '- insert:',
+      '    - id: dsh-core',
+      '      name: dsh-core',
+      '      config: {keep: true}',
+      '    - id: dsh-broken',
+      '      name: dsh-broken',
+      '      config: {safeMode: false}',
+      '',
+    ].join('\n')
+    await fs.writeFile(patchFile, original)
+
+    // Run the standalone body in a sandbox (env DSH_HOME points at
+    // tmpHome, so the body's PATCH_F resolves to the file above).
+    // eslint-disable-next-line no-new-func
+    const sandbox = new Function('module', 'exports', 'require', WATCHDOG_STANDALONE_BODY + '\nreturn stageDisableRow')
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const stageDisableRow = sandbox({}, {}, require) as (id: string) => boolean
+
+    expect(stageDisableRow('dsh-broken')).toBe(true)
+
+    const patched = await fs.readFile(patchFile, 'utf8')
+    expect(patched).toContain('dsh-core')
+    expect(patched).not.toContain('dsh-broken')
+
+    // The marker + backup must exist for manual restoration.
+    const entries = await fs.readdir(profileDir)
+    expect(entries.some((e) => e === 'cordis.patch.yml.doctor-disabled-dsh-broken')).toBe(true)
+    expect(entries.some((e) => e.startsWith('cordis.patch.yml.doctor-bak-'))).toBe(true)
+
+    // Row not found → marker only, patch untouched.
+    expect(stageDisableRow('dsh-unknown-row')).toBe(true)
+    const patched2 = await fs.readFile(patchFile, 'utf8')
+    expect(patched2).toBe(patched)
+  })
+
+  it('removeRowFromPatch keeps sibling rows and trailing patch blocks intact', async () => {
+    // Structural check on the pruning helper itself: multi-row patches and
+    // a second patch section must survive (only the target row goes).
+    // eslint-disable-next-line no-new-func
+    const sandbox = new Function('module', 'exports', 'require', WATCHDOG_STANDALONE_BODY + '\nreturn removeRowFromPatch')
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const removeRowFromPatch = sandbox({}, {}, require) as (lines: string[], id: string) => string[]
+
+    const lines = [
+      '- insert:',
+      '    - id: keep-a',
+      '      name: keep-a',
+      '      config: {x: 1}',
+      '    - id: drop-me',
+      '      name: drop-me',
+      '      config: {y: 2}',
+      '    - id: keep-b',
+      '      name: keep-b',
+      '      config: {z: 3}',
+    ]
+    const out = removeRowFromPatch(lines, 'drop-me')
+    expect(out).toEqual([
+      '- insert:',
+      '    - id: keep-a',
+      '      name: keep-a',
+      '      config: {x: 1}',
+      '    - id: keep-b',
+      '      name: keep-b',
+      '      config: {z: 3}',
+    ])
+
+    // Dropping the LAST row must not swallow the rows before it.
+    const out2 = removeRowFromPatch(lines, 'keep-b')
+    expect(out2).toEqual([
+      '- insert:',
+      '    - id: keep-a',
+      '      name: keep-a',
+      '      config: {x: 1}',
+      '    - id: drop-me',
+      '      name: drop-me',
+      '      config: {y: 2}',
+    ])
+
+    // Unknown id → line count is unchanged (nothing pruned).
+    const out3 = removeRowFromPatch(lines, 'not-there')
+    expect(out3.length).toBe(lines.length)
   })
 
   it('tailFileByLines returns the last N lines (functional test)', async () => {

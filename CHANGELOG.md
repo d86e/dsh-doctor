@@ -5,6 +5,75 @@ All notable changes to `@d86e/dsh-doctor` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.22] — 2026-08-30
+
+### Fixed — the standalone watchdog's triage regexes were cooked (5 of 12 patterns dead)
+
+- **`src/watchdog.standalone.ts`** — the body was built with a
+  *tagged* `String\`...\`` template. A tagged template **cooks** its
+  backslash escapes, so every `\s` in the inline PATTERNS table became
+  `s`, every `\d` became `d`, every `\.` became `.` in the generated
+  script. Five patterns (EADDRINUSE, duplicate-loader-entry,
+  node-version-mismatch, corrupt-patch-yaml, plugin-export-missing)
+  silently fell through to safe-mode on every incident — the "simple
+  path" was mostly dead. The body is now a `String.raw\`...\`` template:
+  backslashes reach the generated script verbatim, and the file header
+  documents the convention so nobody "fixes" it back.
+- **CI gap that hid this** — the previous watchdog tests only asserted
+  that the body *contains* certain function names and that it parses;
+  they never *ran* the inline triage. New regression test
+  `"every inline triage pattern really matches its log line"` executes
+  the cooked body's own `triage()` against one realistic log line per
+  pattern (13 fixtures), so any future cooking breakage fails the suite.
+
+### Fixed — `guessPkgFromPath` referenced but never defined
+
+- **`src/watchdog.standalone.ts`** — the `plugin-file-missing` pattern
+  table entry called `guessPkgFromPath(...)`, but no such function
+  existed in the generated script: every plugin-file-missing triage
+  threw `ReferenceError: guessPkgFromPath is not defined` inside the
+  *watchdog process* (caught only as a fallback safe-mode). The
+  function is now defined (scoped + unscoped forms) and is covered by
+  the new cooked-body regression test.
+
+### Fixed — simple-path "disable row" only wrote a marker nobody consumed
+
+- **`src/watchdog.standalone.ts` (`stageDisableRow`)** — pre-v0.2.22
+  the simple recovery wrote
+  `cordis.patch.yml.doctor-disabled-<id>` and left
+  `cordis.patch.yml` alone. Dsh web boots from `cordis.patch.yml`, so
+  the broken row was still mounted on restart, the incident re-tripped,
+  and eventually escalated to safe-mode. Now the function rewrites the
+  patch: it backs up the original to
+  `cordis.patch.yml.doctor-bak-<epoch>`, atomically writes a pruned
+  copy without the matched row, and keeps the marker as the human
+  restore record. A new `removeRowFromPatch` helper does the pruning
+  (row = its `id:` line + indented continuations; sibling rows and
+  other patch sections are preserved).
+- **`tests/watchdog.spec.ts`** — two functional tests run the cooked
+  body's `stageDisableRow` / `removeRowFromPatch` against a real temp
+  `cordis.patch.yml` (prune middle row, prune last row, marker-only
+  fallback when the row is absent).
+
+### Fixed — schema-parse / peer-conflict / export-missing id extraction
+
+- **`src/watchdog.standalone.ts`** — three more extraction bugs in the
+  inline table (the standalone copy had drifted from the
+  `src/triage.ts` fixed in v0.2.18): schema-parse could capture the
+  filler word "in" as the package id; pnpm-peer-conflict used the
+  pre-v0.2.18 greedy-alternative regex; plugin-export-missing never
+  matched the plain `did/did not export name and apply` form. All
+  three are now aligned with `src/triage.ts` behavior and covered by
+  the cooked-body fixtures.
+
+### Why
+
+The common thread: the standalone watchdog is a **string**, and for
+two weeks it was a string that parsed but did not behave. The tests
+asserted presence, not behavior. The new test executes the cooked
+body, which is the only kind of test that can see what the generated
+script actually does.
+
 ## [0.2.21] — 2026-08-30
 
 ### Fixed — tool errors raised via `throw` were silently dropped
