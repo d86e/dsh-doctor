@@ -385,6 +385,99 @@ describe('generated script', () => {
     ).toBe(JSON.stringify(ConfigDefaults.safeModeBundles))
   })
 
+  it('probe(): healthy when / answers 200 even though /health 404s (live-bug regression)', async () => {
+    // The pre-v0.2.27 probe hit only /health. dsh web serves no /health
+    // route (verified live: HTTP 404 on a healthy, fully working GUI),
+    // so a healthy server was reported broken and the daemon downgrade-
+    // stormed into safe-mode. probe must treat "the GUI shell is being
+    // served" as healthy. Functional test against a real HTTP server:
+    //   / -> 200 (shell), /health -> 404  =>  probe() === true
+    const httpMod = await import('node:http')
+    const server = httpMod.createServer((req, res) => {
+      if (req.url === '/') { res.statusCode = 200; res.setHeader('content-type', 'text/html'); res.end('<!doctype html><html></html>') }
+      else { res.statusCode = 404; res.end('not found') }
+    })
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r))
+    const addr = server.address()
+    if (typeof addr !== 'object' || addr === null) throw new Error('expected a bound address')
+    process.env.DSH_WEB_PORT = String(addr.port)
+    // eslint-disable-next-line no-new-func
+    const sandbox = new Function('module', 'exports', 'require', WATCHDOG_STANDALONE_BODY + '\nreturn probe')
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const probe = sandbox({}, {}, require) as () => Promise<boolean>
+    try {
+      expect(await probe()).toBe(true)
+    } finally {
+      delete process.env.DSH_WEB_PORT
+      await new Promise<void>((r) => server.close(() => r()))
+    }
+  })
+
+  it('probe(): broken when neither / nor /health answers 200', async () => {
+    const httpMod = await import('node:http')
+    // Server that accepts TCP (so portHasListener is true — the exact
+    // "alive but broken" state) but 404s everything, including /.
+    const server = httpMod.createServer((_req, res) => { res.statusCode = 404; res.end('nope') })
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r))
+    const addr = server.address()
+    if (typeof addr !== 'object' || addr === null) throw new Error('expected a bound address')
+    process.env.DSH_WEB_PORT = String(addr.port)
+    // eslint-disable-next-line no-new-func
+    const sandbox = new Function('module', 'exports', 'require', WATCHDOG_STANDALONE_BODY + '\nreturn probe')
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const probe = sandbox({}, {}, require) as () => Promise<boolean>
+    try {
+      expect(await probe()).toBe(false)
+    } finally {
+      delete process.env.DSH_WEB_PORT
+      await new Promise<void>((r) => server.close(() => r()))
+    }
+  })
+
+  it('probe(): healthy when /health is 200 even if / is a 500 (semantic endpoint wins)', async () => {
+    const httpMod = await import('node:http')
+    const server = httpMod.createServer((req, res) => {
+      if (req.url === '/health') { res.statusCode = 200; res.end('ok') }
+      else { res.statusCode = 500; res.end('boom') }
+    })
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r))
+    const addr = server.address()
+    if (typeof addr !== 'object' || addr === null) throw new Error('expected a bound address')
+    process.env.DSH_WEB_PORT = String(addr.port)
+    // eslint-disable-next-line no-new-func
+    const sandbox = new Function('module', 'exports', 'require', WATCHDOG_STANDALONE_BODY + '\nreturn probe')
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const probe = sandbox({}, {}, require) as () => Promise<boolean>
+    try {
+      expect(await probe()).toBe(true)
+    } finally {
+      delete process.env.DSH_WEB_PORT
+      await new Promise<void>((r) => server.close(() => r()))
+    }
+  })
+
+  it('probe(): dead when nothing listens on the port', async () => {
+    // Bind then close to grab a (probably) free port, and point the
+    // probe at it.
+    const netMod = await import('node:net')
+    const listener = netMod.createServer()
+    await new Promise<void>((r) => listener.listen(0, '127.0.0.1', r))
+    const addr = listener.address()
+    const port = typeof addr === 'object' && addr !== null ? addr.port : 0
+    await new Promise<void>((r) => listener.close(() => r()))
+    if (port === 0) throw new Error('no free port')
+    process.env.DSH_WEB_PORT = String(port)
+    // eslint-disable-next-line no-new-func
+    const sandbox = new Function('module', 'exports', 'require', WATCHDOG_STANDALONE_BODY + '\nreturn probe')
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const probe = sandbox({}, {}, require) as () => Promise<boolean>
+    try {
+      expect(await probe()).toBe(false)
+    } finally {
+      delete process.env.DSH_WEB_PORT
+    }
+  })
+
   it('singleInstance stamps the start marker that status uses for uptime', async () => {
     // The status tool's real uptime comes from .doctor-started, written
     // once by singleInstance() at watchdog boot. Run the cooked body in a

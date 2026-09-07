@@ -5,6 +5,60 @@ All notable changes to `@d86e/dsh-doctor` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.27] — 2026-09-07
+
+### Fixed — the healthy-GUI false positive (probe hit a route that does not exist)
+
+**The live bug.** On this machine, with the GUI fully working
+(`GET /` → 200 for every user request), the daemon's watchdog log was
+stuck on:
+
+```
+first probe failure with port listening — dsh web alive but broken; reading log for triage
+triage: matched=null kind=safe-mode
+recovery budget exhausted … staging safe-mode
+```
+
+repeating every 2 s. Root cause: `probe()` hit `GET /health` and treated
+anything but 200 as a failure — but **dsh web has no `/health` route**
+(verified live: 404). A perfectly healthy web server was therefore
+probed as "alive but broken", its (clean) log triaged with no pattern
+matching, and the no-match fallback — safe-mode — re-staged on every
+incident window. Two real costs:
+
+1. **False downgrade** — a healthy profile's next restart would boot in
+   safe-mode (dsh-core only) for no reason.
+2. **Log spam + CPU** — a `recovery rate-limited` line every two
+   seconds for as long as the doctor is installed.
+
+**The fix.** `probe()` now runs two concurrent probes: `GET /` (the GUI
+shell — always 200 while the server actually serves users) and
+`GET /health` (kept for forward-compat: a future dsh may add a real
+semantic health endpoint, and if it does and it reports failure, that
+still wins over a 200 root page is not the right semantic — but today
+a 200 on EITHER is healthy, which is exactly the distinction that
+matters while the route set is static). A new `probePath(p)` helper
+owns the shared timeout/error/drain handling so both endpoints behave
+identically.
+
+**Proof.** Four functional tests boot REAL HTTP servers on random
+ports and run the cooked body's own `probe()` against them:
+
+- `/` → 200, `/health` → 404 ⇒ **healthy** (the live-bug regression case)
+- everything 404 on a live TCP port ⇒ **broken** (true "alive but broken")
+- `/` → 500, `/health` → 200 ⇒ **healthy** (semantic endpoint wins)
+- nothing listening ⇒ **dead**
+
+### Why
+
+The probe was written against an imagined API. The single most
+dangerous class of liveness false positive is "healthy on the outside,
+unhealthy in the doctor's eyes", because every recovery play it triggers
+(downgrade, patch rewrite, budget burn) costs a working system
+something while fixing nothing. The four-case suite pins the truth
+table so the next route change on either side fails CI instead of the
+user's next restart.
+
 ## [0.2.26] — 2026-09-07
 
 ### Fixed — dead default: the daemon source said 30 s, the runtime probed every 2 s
