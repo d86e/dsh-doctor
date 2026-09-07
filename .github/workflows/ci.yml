@@ -74,10 +74,13 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm run build
+      # pnpm pack has no --dry-run (that is npm syntax); a plain `pnpm pack`
+      # both lists the would-be contents and writes the .tgz, which the
+      # artifact step below uploads.
       - name: Pack
         run: pnpm pack
       - name: Inspect pack contents
-        run: pnpm pack --dry-run
+        run: node -e "console.log(require('fs').readdirSync('.').filter((f)=>f.endsWith('.tgz')).join('\n'))"
       - uses: actions/upload-artifact@v4
         with:
           name: tarball
