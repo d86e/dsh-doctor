@@ -30,6 +30,18 @@ export declare const inject: string[];
 export declare function resolvedDshToolsVersion(): string;
 /** Turn a silent peer mismatch into a loud, actionable load error. */
 export declare function assertPeerCompatible(): void;
+/**
+ * Does `process.argv` look like a genuine `dsh web` launch?
+ *
+ * The doctor's apply() runs in whatever process mounts the web profile,
+ * and that is NOT always the web server: `dsh plugin --profile web add`,
+ * a profile-check, or a one-shot `node` evaluating the profile all run
+ * apply() too (observed live: a `dsh plugin add`'s short-lived pid
+ * clobbered the running web's .dsh-web.pid). Only a process whose
+ * first non-flag subcommand token is `web` is actually the server, so
+ * only it should publish its pid.
+ */
+export declare function looksLikeDshWeb(argv?: readonly string[]): boolean;
 export declare function apply(ctx: Context, config: ConfigT): void;
 interface RecoveryEntry {
     ts: string;

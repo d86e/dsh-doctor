@@ -5,6 +5,53 @@ All notable changes to `@d86e/dsh-doctor` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.32] — 2026-09-08
+
+### Fixed — v0.2.31's pid writer let a short-lived CLI process clobber the web's
+
+v0.2.31 made apply() unconditionally write process.pid into
+~/.dsh/profiles/web/.dsh-web.pid. But apply() runs in whatever process
+mounts the web profile — and that is not always the web server. dsh
+plugin --profile web add and any one-shot node process that evaluates
+the profile all run apply() too, with a short-lived pid that dies before
+dsh web does. Observed live an hour after the 0.2.31 ship while the real
+web (pid 98431, up since yesterday 18:15, still serving 3080) had its
+marker overwritten at 02:18 by pid 26855 — a dead dsh plugin add runner.
+A stale marker like that is worse than none: the kill branch's
+"recorded pid already dead" fast-path would have concluded the port-holder
+was already gone and spawned a new dsh web straight into EADDRINUSE
+against the real one.
+
+- src/index.ts — looksLikeDshWeb(argv), exported and unit-tested:
+  only a process whose first non-flag subcommand is web AND whose
+  argv[1] is the dsh executable (base name dsh / dsh.js / dsh.cmd /
+  dsh.exe) gets to write the marker. apply() now guards writeWebPid
+  behind it, so dsh plugin add, npx, and profile-checks stop clobbering.
+- src/watchdog.standalone.ts — startWeb() now records the child pid it
+  actually spawned into the same .dsh-web.pid. In manual mode the daemon
+  is the launcher, and a marker left over from a different boot (or a
+  clobber) would mislead the next kill-pid-and-restart; the write is
+  best-effort next to the spawn.
+- tests — new tests/dsh-web-detect.spec.ts (4 tests): accepts a real
+  dsh web launch (with or without flags and with a pathed argv[1]),
+  rejects the live clobber shape dsh plugin --profile web add, rejects
+  node script.js web (subcommand token is an argument, not a dsh
+  command), and is conservative on ambiguous argv. Existing kill-branch
+  behavior is unchanged (29 watchdog tests still green: the stubbed-DSH_BIN
+  test now also pins that the manual-mode spawn records web --port).
+
+### Why
+
+This is the same "the other end of the contract was never actually
+exercised" family as v0.2.31, one round later: the writer existed and
+wrote the right value in the right place — for the web. It just also
+wrote that value from every other process that happened to load the
+profile, and the live host has plenty of those (dsh plugin add runs a
+fresh profile eval each time). The guard does not add a new state
+channel; it narrows the write side to the process that actually owns
+the port, and startWeb closes the manual-mode gap where the daemon is
+the one doing the launching.
+
 ## [0.2.31] — 2026-09-07
 
 ### Fixed — the kill-pid-and-restart branch killed a file nothing ever wrote
