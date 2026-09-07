@@ -5,6 +5,60 @@ All notable changes to `@d86e/dsh-doctor` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.23] — 2026-09-07
+
+### Added — platform-branched service-spec coverage (all three OSes, on any host)
+
+CI runs on ubuntu only, so the `darwin` (LaunchAgent plist) and `win32`
+(Task Scheduler XML + VBS) branches of `buildServiceSpec` could never be
+exercised by the suite — a regression in either branch shipped silently
+and was first caught by a real user on that OS. New `buildServiceSpec
+per platform (mocked)` describe stubs `process.platform` and asserts
+each branch's output and command vectors:
+
+- **darwin** — plist carries the `com.deepseek-ai.dsh-doctor` label,
+  `KeepAlive`, the node binary and the configured port; register/start/
+  stop go through `launchctl`.
+- **linux** — unit has `[Service] ExecStart=`, `Restart=always`,
+  `RestartSec=`, `WantedBy=default.target`; commands use
+  `systemctl --user`.
+- **win32** — the joined content re-splits cleanly on the `---` marker
+  back into a `<Task version="1.4">` XML (wscript launcher pointing at
+  `dsh-doctor.vbs`) and a VBS that sets `DSH_HOME` / `DSH_WEB_PORT` and
+  starts node hidden against the generated `doctor/watchdog.js` path;
+  all four command vectors are `schtasks`.
+
+### Fixed — CI: three stacked failures hiding the real test signal
+
+Every CI run since the pnpm 9 bump died before a single one of our
+tests ran, so "CI red" carried no signal at all:
+
+1. `pnpm/action-setup@v4` rejected the combination of the workflow's
+   `version: 9` and the repo's `packageManager: pnpm@9.12.0`
+   ("Multiple versions of pnpm specified") — the action now pins
+   9.12.0 to match the package.
+2. `pnpm install --frozen-lockfile` failed with
+   `ERR_PNPM_OUTDATED_LOCKFILE` — `package.json` gained the
+   `@deepseek-ai/schemastery` peer dependency (cordis 4.x compat) but
+   the lockfile was never regenerated. Lockfile refreshed with
+   pnpm 9.12.0.
+3. The pack job used `pnpm pack --dry-run` — an npm-ism; pnpm has no
+   `--dry-run` flag, so the job died after the other two were already
+   green. Replaced with a plain `pnpm pack` (which both lists the
+   contents and writes the .tgz) plus a trivial tarball-existence check.
+
+All three jobs are green as of v0.2.23 — "CI red" finally means
+something again.
+
+### Why
+
+Mocking `process.platform` turns a "only works where you test it"
+suite into one where every OS branch is asserted on every push, on
+every host. The CI fixes are mundane but load-bearing: a pipeline
+that cannot get past dependency setup cannot catch a broken regex —
+see v0.2.22, which shipped five silently-dead triage patterns straight
+through a pipeline whose only failure mode was pnpm version parsing.
+
 ## [0.2.22] — 2026-08-30
 
 ### Fixed — the standalone watchdog's triage regexes were cooked (5 of 12 patterns dead)
