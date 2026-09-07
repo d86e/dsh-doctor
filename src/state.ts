@@ -156,3 +156,21 @@ export async function readLastTickAt(): Promise<number | null> {
 export function lastTickPath(): string {
   return path.join(doctorBase(), 'doctor', '.doctor-last-tick')
 }
+
+/**
+ * Read the watchdog's start timestamp (epoch ms), or `null`. Written once
+ * by the generated script at boot (before the first tick) and removed on
+ * clean shutdown / uninstall. Lets `dsh_doctor_status` report a real
+ * uptime instead of the historical hard-coded 'unknown (pid alive)'.
+ */
+export async function readStartedAt(): Promise<number | null> {
+  const raw = await readFileOrNull(startedAtPath())
+  if (raw === null) return null
+  const n = Number(raw.trim())
+  return Number.isFinite(n) && n > 0 ? n : null
+}
+
+/** Absolute path to the watchdog's start timestamp marker. */
+export function startedAtPath(): string {
+  return path.join(doctorBase(), 'doctor', '.doctor-started')
+}

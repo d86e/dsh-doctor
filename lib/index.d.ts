@@ -36,6 +36,15 @@ interface RecoveryEntry {
     plan: string;
     detail: string;
 }
-export { Config, resolveConfig, satisfiesCaret, TESTED_PEER_RANGE, triage, diagnose, applySafeModePatch, clearSafeModePatch, isSafeModeActive, buildServiceSpec, writeServiceSpec, removeServiceSpec, currentPlatform, installWatchdogScript, isWatchdogInstalled, pluginVersion, WATCHDOG_STANDALONE_BODY, };
+/**
+ * Human-readable uptime from a duration in seconds.
+ *
+ * Rule: drop leading zero units, show at most three units, drop
+ * trailing zero units. '300s' -> '5m' (not '5m 0s'),
+ * '86400+3600' -> '1d 1h', '2d 3h 1m 1s' -> '2d 3h 1m' (seconds fall
+ * off the three-unit budget), '0' -> '0s'.
+ */
+declare function formatUptime(sec: number): string;
+export { formatUptime, Config, resolveConfig, satisfiesCaret, TESTED_PEER_RANGE, triage, diagnose, applySafeModePatch, clearSafeModePatch, isSafeModeActive, buildServiceSpec, writeServiceSpec, removeServiceSpec, currentPlatform, installWatchdogScript, isWatchdogInstalled, pluginVersion, WATCHDOG_STANDALONE_BODY, };
 export type { ConfigT, ActionPlan, RecoveryEntry, ToolErrorEntry };
 //# sourceMappingURL=index.d.ts.map

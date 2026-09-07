@@ -60,4 +60,13 @@ export declare function logPath(kind: DoctorLogKind): string;
 export declare function readLastTickAt(): Promise<number | null>;
 /** Absolute path to the watchdog's last-tick marker. */
 export declare function lastTickPath(): string;
+/**
+ * Read the watchdog's start timestamp (epoch ms), or `null`. Written once
+ * by the generated script at boot (before the first tick) and removed on
+ * clean shutdown / uninstall. Lets `dsh_doctor_status` report a real
+ * uptime instead of the historical hard-coded 'unknown (pid alive)'.
+ */
+export declare function readStartedAt(): Promise<number | null>;
+/** Absolute path to the watchdog's start timestamp marker. */
+export declare function startedAtPath(): string;
 //# sourceMappingURL=state.d.ts.map

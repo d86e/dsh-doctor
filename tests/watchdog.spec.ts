@@ -307,4 +307,29 @@ describe('generated script', () => {
     // Missing file is an empty array, never a throw.
     expect(tailFileByLines(path.join(tmpHome, 'does-not-exist'), 10)).toEqual([])
   })
+
+  it('singleInstance stamps the start marker that status uses for uptime', async () => {
+    // The status tool's real uptime comes from .doctor-started, written
+    // once by singleInstance() at watchdog boot. Run the cooked body in a
+    // sandbox (it takes process.exit on a live duplicate, so use a fresh
+    // tmp home with no existing pid file) and check the marker.
+    const before = Date.now()
+    // eslint-disable-next-line no-new-func
+    const sandbox = new Function('module', 'exports', 'require', WATCHDOG_STANDALONE_BODY + '\nreturn singleInstance')
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const singleInstance = sandbox({}, {}, require) as () => void
+    singleInstance()
+
+    const pidFile = path.join(tmpHome, 'doctor', '.doctor-watchdog.pid')
+    const startedFile = path.join(tmpHome, 'doctor', '.doctor-started')
+    const pidRaw = await fs.readFile(pidFile, 'utf8')
+    expect(Number(pidRaw.trim())).toBe(process.pid)
+
+    const startedRaw = await fs.readFile(startedFile, 'utf8')
+    const ts = Date.now()
+    const started = Number(startedRaw.trim())
+    expect(Number.isFinite(started)).toBe(true)
+    expect(started).toBeGreaterThanOrEqual(before - 5000)
+    expect(started).toBeLessThanOrEqual(ts + 5000)
+  })
 })

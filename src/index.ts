@@ -37,6 +37,8 @@ import {
   logPath,
   readLastTickAt,
   lastTickPath,
+  readStartedAt,
+  startedAtPath,
   type DoctorLogKind,
 } from './state.js'
 import { satisfiesCaret, TESTED_PEER_RANGE } from './version.js'
@@ -352,6 +354,7 @@ export function apply(ctx: Context, config: ConfigT): void {
           StatePaths.safeModePatch(),
           StatePaths.watchdogScript(),
           lastTickPath(),
+          startedAtPath(),
         ]) {
           try {
             await fs.unlink(f)
@@ -410,7 +413,21 @@ export function apply(ctx: Context, config: ConfigT): void {
             if (Number.isInteger(n) && n > 0 && pidAlive(n)) {
               running = true
               pid = n
-              uptime = 'unknown (pid alive)'
+              // Real uptime from the watchdog's start marker. The marker
+              // is stamped once at watchdog boot and removed on clean
+              // shutdown / uninstall; fall back to the (inaccurate but
+              // honest) age of the last tick, then to the installed
+              // marker's mtime.
+              const startedAt = await readStartedAt()
+              const lastTick = await readLastTickAt()
+              if (startedAt !== null) {
+                const sec = Math.max(0, Math.round((Date.now() - startedAt) / 1000))
+                uptime = formatUptime(sec)
+              } else if (lastTick !== null) {
+                uptime = `unknown boot time; last tick ${Math.max(0, Math.round((Date.now() - lastTick) / 1000))}s ago`
+              } else {
+                uptime = 'unknown (pid alive)'
+              }
             }
           }
         }
@@ -715,8 +732,33 @@ function extractTs(line: string): string {
   return m ? m[1] : ''
 }
 
+/**
+ * Human-readable uptime from a duration in seconds.
+ *
+ * Rule: drop leading zero units, show at most three units, drop
+ * trailing zero units. '300s' -> '5m' (not '5m 0s'),
+ * '86400+3600' -> '1d 1h', '2d 3h 1m 1s' -> '2d 3h 1m' (seconds fall
+ * off the three-unit budget), '0' -> '0s'.
+ */
+function formatUptime(sec: number): string {
+  const s = Math.max(0, Math.floor(sec))
+  const units: Array<[number, string]> = [
+    [Math.floor(s / 86400), 'd'],
+    [Math.floor((s % 86400) / 3600), 'h'],
+    [Math.floor((s % 3600) / 60), 'm'],
+    [s % 60, 's'],
+  ]
+  let start = 0
+  while (start < units.length && units[start][0] === 0) start++
+  if (start >= units.length) return '0s'
+  let end = Math.min(units.length, start + 3)
+  while (end > start && units[end - 1][0] === 0) end--
+  return units.slice(start, end).map(([v, u]) => `${v}${u}`).join(' ')
+}
+
 // Re-export for unit tests and for the dsh CLI doctor subcommand.
 export {
+  formatUptime,
   Config,
   resolveConfig,
   satisfiesCaret,

@@ -5,6 +5,40 @@ All notable changes to `@d86e/dsh-doctor` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.24] — 2026-09-07
+
+### Fixed — `dsh_doctor_status.uptime` reported a real value at last
+
+The status tool returned `uptime: 'unknown (pid alive)'` for EVERY live
+watchdog — a hard-coded string, never a number. Now:
+
+- **`src/watchdog.standalone.ts`** — `singleInstance()` stamps
+  `.doctor-started` (epoch ms) once at watchdog boot, and `cleanup()`
+  removes it on SIGINT/SIGTERM, so the marker is alive for exactly the
+  process's lifetime. Uninstall removes it alongside the other state
+  files.
+- **`src/index.ts`** — the status tool reads the start marker and
+  renders a real duration via the new `formatUptime` (e.g. `1d 1h 1m`,
+  never more than three units, trailing zero units dropped: `300s` →
+  `5m`). Fallback chain when the marker is absent but the pid is alive:
+  last-tick age, then the old honest `'unknown (pid alive)'`.
+- **`src/state.ts`** — `readStartedAt()` / `startedAtPath()` join the
+  other state helpers.
+- **tests** — a functional test runs the cooked body's
+  `singleInstance` in a sandbox temp home and asserts the marker is
+  written with a sane timestamp next to the pid file; a new spec file
+  pins the `formatUptime` rules (interior zeros kept, trailing zero
+  units dropped, three-unit cap, fractional-second truncation, negative
+  clamp).
+
+### Why
+
+A liveness feature that always lies is worse than no feature: an agent
+reading `uptime: "unknown (pid alive)"` has no way to tell a 30-second-
+old watchdog from a three-week-old one, which is exactly the distinction
+that decides whether "it just booted, wait" or "it has been wedged,
+restart" is the right move.
+
 ## [0.2.23] — 2026-09-07
 
 ### Added — platform-branched service-spec coverage (all three OSes, on any host)
