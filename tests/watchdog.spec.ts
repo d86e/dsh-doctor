@@ -90,6 +90,18 @@ describe('watchdog standalone body', () => {
     // itself is a string and the stamp is injected by `buildWatchdogScript()`.
     expect(pluginVersion()).toMatch(/^\d+\.\d+\.\d+/)
   })
+
+  it('uses a streaming tail instead of reading the whole log file', () => {
+    // Regression: prior versions did `fs.readFileSync(webLog, 'utf8')`
+    // and split — a 500 MB dsh-web.log would block the watchdog tick
+    // for many seconds and risk OOM. The fix adds a `tailFileByLines`
+    // helper that reads 64 KiB chunks from the end. We only check that
+    // the helper is present; its behaviour is covered by the triage tail
+    // unit tests.
+    expect(WATCHDOG_STANDALONE_BODY).toMatch(/function tailFileByLines\(/)
+    expect(WATCHDOG_STANDALONE_BODY).toMatch(/fs\.readSync\(fd, buf/)
+    expect(WATCHDOG_STANDALONE_BODY).toMatch(/triageLogLines/)
+  })
 })
 
 describe('generated script', () => {
@@ -116,5 +128,37 @@ describe('generated script', () => {
     // does not execute the body, so it's safe to run in tests.
     // eslint-disable-next-line no-new-func
     expect(() => new Function(text)).not.toThrow()
+  })
+
+  it('tailFileByLines returns the last N lines (functional test)', async () => {
+    // Extract the standalone body, define `tailFileByLines` in a sandbox,
+    // and exercise it on a real temp file. This protects against future
+    // refactors that move or rename the helper.
+    // eslint-disable-next-line no-new-func
+    const sandbox = new Function('module', 'exports', 'require', WATCHDOG_STANDALONE_BODY + '\nreturn tailFileByLines')
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const tailFileByLines = sandbox({}, {}, require) as (file: string, n: number) => string[]
+
+    const f = path.join(tmpHome, 'tail-target.log')
+    // Write 5000 short lines so the file exceeds one 64 KiB chunk and the
+    // helper has to read multiple chunks from the end.
+    const stream = (await import('node:fs')).createWriteStream(f)
+    for (let i = 0; i < 5000; i++) {
+      stream.write(`line-${i}\n`)
+    }
+    await new Promise<void>((res) => stream.end(res))
+
+    const last10 = tailFileByLines(f, 10)
+    expect(last10.length).toBe(10)
+    expect(last10[0]).toBe('line-4990')
+    expect(last10[9]).toBe('line-4999')
+
+    const last3 = tailFileByLines(f, 3)
+    expect(last3.length).toBe(3)
+    expect(last3[0]).toBe('line-4997')
+    expect(last3[2]).toBe('line-4999')
+
+    // Missing file is an empty array, never a throw.
+    expect(tailFileByLines(path.join(tmpHome, 'does-not-exist'), 10)).toEqual([])
   })
 })

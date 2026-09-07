@@ -217,12 +217,23 @@ export const PATTERNS: readonly Pattern[] = [
   {
     id: 'pnpm-peer-conflict',
     description: 'pnpm peer-dependency conflict (a plugin needs an incompatible version of a shared dep).',
-    regex: /(?:peer dep|peerDependencies?|ERESOLVE).*?(?:@?[A-Za-z0-9_.\-]+\/[A-Za-z0-9_.\-]+|[A-Za-z0-9_.\-]+)@[\^~]?[\d.]+.*?(?:incompatible|conflict)/i,
+    // Capture the first scoped or unscoped package specifier followed by
+    // `@<version>` directly after a peer/ERESOLVE keyword. The old regex
+    // used two greedy alternatives and `extractId` then tried to find a
+    // scoped match in the *full* match, which produced wrong ids when the
+    // first alternative fired (e.g. an unscoped package named after the
+    // "conflict" word, or a substring of the error message). Capturing
+    // the package name directly avoids that whole class of bug.
+    regex: /(?:peer\s+dep(?:endency|endencies)?|ERESOLVE)[^\n]*?(@?[A-Za-z0-9_.\-]+(?:\/[A-Za-z0-9_.\-]+)?)@[\^~]?[\d.]+[^\n]*?(?:incompatible|conflict)/i,
     priority: 78,
     extractId: (m) => {
-      const pkg = m[1] ?? m[0]
-      const match = (pkg ?? '').match(/(@?[A-Za-z0-9_.\-]+\/[A-Za-z0-9_.\-]+)/)
-      return match ? match[1] : null
+      const pkg = m[1]
+      if (!pkg) return null
+      // Scoped packages: `@scope/name`
+      if (pkg.startsWith('@')) return pkg
+      // Unscoped: keep the first path segment only (the package name).
+      // `foo/bar@1.0.0` → `foo`.
+      return pkg.split('/')[0] ?? null
     },
     build: (id) => ({
       kind: 'disable-row',

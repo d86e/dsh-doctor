@@ -63,6 +63,8 @@ export interface Config {
   watchTickIntervalMs: number
   /** Auto-install the watchdog on first plugin load (default true). */
   autoInstall: boolean
+  /** How many of the most-recent dsh web log lines triage considers. */
+  triageLogLines: number
 }
 
 const Defaults: Config = {
@@ -81,6 +83,7 @@ const Defaults: Config = {
   watchContinueText: '继续',
   watchTickIntervalMs: 30_000,
   autoInstall: true,
+  triageLogLines: 1000,
 }
 
 /**
@@ -113,6 +116,7 @@ export const Config: unknown = z.object({
   watchContinueText: (z.string() as unknown as StringWithDefault).default(Defaults.watchContinueText),
   watchTickIntervalMs: (z.number() as unknown as NumberWithDefault).default(Defaults.watchTickIntervalMs),
   autoInstall: (z.boolean() as unknown as BooleanWithDefault).default(Defaults.autoInstall),
+  triageLogLines: (z.natural() as unknown as NaturalWithDefault).min(50).default(Defaults.triageLogLines),
 })
 
 /** The default-values snapshot, also useful for the CLI doctor at startup. */
@@ -156,5 +160,6 @@ export function resolveConfig(base: Config, env: NodeJS.ProcessEnv = process.env
       : base.watchContinueText,
     watchTickIntervalMs: num('DSH_DOCTOR_WATCH_TICK_MS', base.watchTickIntervalMs),
     autoInstall: bool('DSH_DOCTOR_AUTO_INSTALL', base.autoInstall),
+    triageLogLines: num('DSH_DOCTOR_TRIAGE_LOG_LINES', base.triageLogLines),
   }
 }

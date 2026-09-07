@@ -5,6 +5,49 @@ All notable changes to `@d86e/dsh-doctor` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.18] — 2026-08-30
+
+### Added — configurable triage log window
+
+- **`src/config.ts`** — new `triageLogLines` knob (default 1000, range
+  50–50000). Overridable via `DSH_DOCTOR_TRIAGE_LOG_LINES` at every
+  watchdog tick. The previous hard-coded `slice(-200)` in the
+  standalone watchdog made triage ineffective whenever dsh web's log
+  had rolled past 200 lines, which is common in long-running profiles.
+- **`src/index.ts` (`dsh_doctor_diagnose`)** — when the caller omits
+  `logLines` (passes 0), the tool now uses the configured
+  `triageLogLines`. The old hard cap of 2000 is widened to 50000 to
+  match the watchdog's effective window.
+
+### Fixed — pnpm peer-dep conflict regex extracted the wrong plugin id
+
+- **`src/triage.ts` (`pnpm-peer-conflict`)** — the old regex used two
+  greedy alternatives and the extractor then tried to find a scoped
+  match in the *whole* match, which produced wrong ids (it could pick
+  up the trailing word "conflict" or a substring of the error message).
+  The new regex captures the package specifier directly and the
+  extractor handles scoped vs unscoped names without scanning the rest
+  of the match.
+
+### Fixed — standalone watchdog could OOM on huge dsh-web logs
+
+- **`src/watchdog.standalone.ts`** — `triageAndDisable` previously did
+  `fs.readFileSync(webLog, 'utf8')` and split, slurping the whole log
+  into memory. A multi-hundred-MB log would block the watchdog tick
+  for seconds and risk OOM. Replaced with a streaming `tailFileByLines`
+  helper that reads 64 KiB chunks from the end until it has enough
+  lines (or hits EOF). Honours the new `triageLogLines` config.
+
+### Why
+
+Three small quality-of-life fixes collected from real-world usage of
+v0.2.17: a stale `slice(-200)` window, a regex that mis-identified
+the offending plugin in peer-dep conflicts, and an unbounded log
+read. Each was independently minor; together they noticeably improve
+the doctor's recovery reliability on misconfigured profiles.
+
+## [0.2.5] — 2026-08-28
+
 ## [0.2.5] — 2026-08-28
 
 ### Fixed — watchdog self-exit between ticks

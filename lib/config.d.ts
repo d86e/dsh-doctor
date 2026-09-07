@@ -44,6 +44,8 @@ export interface Config {
     watchTickIntervalMs: number;
     /** Auto-install the watchdog on first plugin load (default true). */
     autoInstall: boolean;
+    /** How many of the most-recent dsh web log lines triage considers. */
+    triageLogLines: number;
 }
 export declare const Config: unknown;
 /** The default-values snapshot, also useful for the CLI doctor at startup. */

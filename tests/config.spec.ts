@@ -29,6 +29,7 @@ describe('Config (schemastery schema)', () => {
     expect(result.value.watchMaxNudgesPerSession).toBe(3)
     expect(result.value.watchContinueText).toBe('继续')
     expect(result.value.watchTickIntervalMs).toBe(30_000)
+    expect(result.value.triageLogLines).toBe(1000)
   })
 
   it('validates an empty config and applies all defaults', () => {
@@ -100,5 +101,10 @@ describe('resolveConfig (env overrides on a plain base)', () => {
     expect(out.safeModeBundles).toEqual(ConfigDefaults.safeModeBundles)
     expect(out.logMaxBytes).toBe(ConfigDefaults.logMaxBytes)
     expect(out.logBackups).toBe(ConfigDefaults.logBackups)
+  })
+
+  it('overrides triageLogLines from DSH_DOCTOR_TRIAGE_LOG_LINES', () => {
+    const out = resolveConfig(ConfigDefaults, { DSH_DOCTOR_TRIAGE_LOG_LINES: '2500' })
+    expect(out.triageLogLines).toBe(2500)
   })
 })

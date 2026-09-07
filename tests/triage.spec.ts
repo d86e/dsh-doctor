@@ -111,6 +111,21 @@ describe('triage patterns', () => {
       expect(plan.pluginId).toBe('@scope/dsh-conflict')
     }
   })
+
+  it('pnpm peer-dep conflict extracts the unscoped package name (not the word "conflict")', () => {
+    // Regression: the old regex used two greedy alternatives and the
+    // extractor then tried to find a scoped match in the *whole* match,
+    // which could pick up the trailing "conflict" word or a substring of
+    // the error message. After the fix, we capture the package directly
+    // and split unscoped paths at the first slash.
+    const plan = triage([
+      "npm ERR! ERESOLVE could not resolve dsh-broken@1.0.0 peer dep conflict with @deepseek-ai/cordis@4.0.0",
+    ])
+    expect(plan.kind).toBe('disable-row')
+    if (plan.kind === 'disable-row') {
+      expect(plan.pluginId).toBe('dsh-broken')
+    }
+  })
 })
 
 describe('diagnose', () => {
