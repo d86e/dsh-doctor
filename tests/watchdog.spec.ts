@@ -530,6 +530,17 @@ describe('generated script', () => {
     )
     await fs.writeFile(path.join(tmpHome, 'profiles', 'web', '.dsh-web.pid'), String(orphanPid))
 
+    // The tmp profile has NO .doctor-web-label, so relaunchViaPlatform
+    // reports "no platform service" and the v0.2.31 manual-mode branch
+    // calls startWeb() directly. startWeb reads env DSH_BIN, so point it
+    // at a lightweight stub that records its invocation and exits — no
+    // real dsh web boot in a unit test, no cleanup needed.
+    const stub = path.join(tmpHome, 'fake-dsh')
+    const spawnMarker = path.join(tmpHome, 'dsh-web-spawned.txt')
+    await fs.writeFile(stub, `#!/bin/sh\necho "web args: $@" >> ${JSON.stringify(spawnMarker)}\n`)
+    await fs.chmod(stub, 0o755)
+    process.env.DSH_BIN = stub
+
     // eslint-disable-next-line no-new-func
     const sandbox = new Function('module', 'exports', 'require', WATCHDOG_STANDALONE_BODY + '\nreturn triageAndDisable')
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -537,15 +548,20 @@ describe('generated script', () => {
 
     triageAndDisable(1000) // elapsed 1s << 60s budget -> kind branch, not budget
 
-    // Give the SIGTERM a beat to land, then verify the orphan is gone
-    // and that NO safe-mode patch was staged (the old fallback).
-    await new Promise((r) => setTimeout(r, 250))
+    // Give the SIGTERM a beat to land and the stub a beat to write its
+    // marker, then verify: the orphan is gone, NO safe-mode patch was
+    // staged (the v0.2.28 fallback, now reserved for failed kills), and
+    // the manual-mode relaunch actually spawned dsh web.
+    await new Promise((r) => setTimeout(r, 300))
     let orphanAlive = true
     try { process.kill(orphanPid, 0) } catch { orphanAlive = false }
     expect(orphanAlive, 'orphan web pid should have been SIGTERMed').toBe(false)
     const safePatch = path.join(tmpHome, 'doctor', 'safe-mode.patch.yml')
     const stat = await fs.stat(safePatch).catch(() => null)
     expect(stat, 'no safe-mode patch may be staged for a killed port conflict').toBeNull()
+    const marker = await fs.readFile(spawnMarker, 'utf8').catch(() => '')
+    expect(marker, 'manual-mode relaunch must spawn dsh web').toContain('web args: web --port')
+    delete process.env.DSH_BIN
     orphan.kill('SIGKILL')
   })
 

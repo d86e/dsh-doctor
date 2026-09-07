@@ -115,6 +115,20 @@ export function pidAlive(pid: number): boolean {
   }
 }
 
+/**
+ * Write the pid of the running dsh web process. The in-process doctor
+ * runs inside dsh web, so `process.pid` IS the web pid: persisting it
+ * is what makes the daemon's EADDRINUSE kill-pid-and-restart branch
+ * have anything to kill. Stale after dsh web exits — readWebPid's
+ * caller treats a dead pid as already-terminated, which is exactly the
+ * "dsh web crashed, its pid file is left behind" case the branch
+ * exists for.
+ */
+export async function writeWebPid(pid: number): Promise<void> {
+  await ensureDir(StatePaths.profileDir())
+  await writeFileAtomic(path.join(StatePaths.profileDir(), '.dsh-web.pid'), `${pid}\n`)
+}
+
 /** Read the DSH web pid from the profile directory, if present. */
 export async function readWebPid(): Promise<number | null> {
   const p = path.join(StatePaths.profileDir(), '.dsh-web.pid')

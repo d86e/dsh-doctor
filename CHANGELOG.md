@@ -5,6 +5,54 @@ All notable changes to `@d86e/dsh-doctor` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.31] — 2026-09-07
+
+### Fixed — the kill-pid-and-restart branch killed a file nothing ever wrote
+
+v0.2.28 wired the EADDRINUSE triage branch to "kill the recorded web pid
+then let the platform service restart dsh web", reading the pid from
+~/.dsh/profiles/web/.dsh-web.pid. But no code path in the repo ever wrote
+that file: readWebPid was the only non-doc reference, and a disk-wide
+find found the marker absent while dsh web was running. The README and
+docs/ARCHITECTURE.md each promise "the watchdog only kills the PID it
+reads from .dsh-web.pid", and the v0.2.28 test hand-wrote the pid file
+itself to feed the branch — so the branch was exercised in tests only,
+and was dead code in production: every real EADDRINUSE fell through
+killWeb() returning "no recorded web pid; skipping kill" straight into
+the safe-mode fallback.
+
+Two changes give the branch a writer and a manual-mode landing:
+
+- src/state.ts + src/index.ts — writeWebPid(pid) is new, and apply()
+  writes process.pid to the marker fire-and-forget. The in-process doctor
+  runs inside dsh web, so process.pid IS the web's pid: that is the
+  missing writer the branch (and both docs) assumed. readWebPid treats a
+  dead pid as the already-dead case the kill branch exists for, so a
+  file left behind after a crash is exactly right.
+- src/watchdog.standalone.ts — the kill branch's success path no longer
+  always "waits for the platform service". If relaunchViaPlatform()
+  reports no registered service (manual mode — exactly the live host's
+  situation, where io.deepseek.dsh is in ~/Library/LaunchAgents but not
+  loaded in launchctl), the branch now startWeb() directly so the killed
+  port-holder's slot is actually repopulated instead of the port
+  staying empty. Safe-mode escalates only when the kill itself fails.
+
+- tests — state.spec: writeWebPid round-trips to readWebPid (proving the
+  writer now exists, not just the reader). watchdog.spec: the EADDRINUSE
+  functional test now stubs DSH_BIN to a marker-logging shell script so
+  that the manual-mode relaunch is asserted (spawned with "web --port"),
+  which would previously have hidden any missing relaunch.
+
+### Why
+
+The "probe an imagined API" bug (v0.2.27 /health 404) was a read side
+assumed to exist. This is the write side assumed to exist: the kill
+branch read a file and the tests seeded it, but production never did.
+The fix does not invent a new state channel — process.pid was already
+the web's pid and the marker path was already there; it just made the
+two ends meet, and gave the branch a landing for the host it is actually
+deployed on.
+
 ## [0.2.30] — 2026-09-07
 
 ### Fixed — crash-loop triage fired mid-boot, demoting a healthy dsh-web boot to safe-mode

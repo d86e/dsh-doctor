@@ -62,7 +62,7 @@ Every 30 s the watchdog probes `http://127.0.0.1:$DSH_WEB_PORT/health`. After 3 
 
 **Invariants** enforced on every recovery:
 
-- The watchdog only kills the PID it reads from `~/.dsh/profiles/web/.dsh-web.pid`. It never invokes `pkill`, `killall`, or any pattern-killer.
+- The watchdog only kills the PID it reads from `~/.dsh/profiles/web/.dsh-web.pid`. It never invokes `pkill`, `killall`, or any pattern-killer. The in-process doctor writes that file at apply() time with process.pid (it runs inside dsh web, so that pid IS the web's); a stale pid reads as the already-dead case the kill branch exists for.
 - A sibling file pattern means your real `cordis.patch.yml` is never silently mutated. Inspect / revert at any time.
 - If 60 s elapses without a healthy probe, the watchdog backs off and retries on the next probe tick instead of thrashing.
 

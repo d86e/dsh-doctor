@@ -219,7 +219,9 @@ N log lines. The first match wins.
 ## Recovery invariants
 
 - `watchdog.js` only signals the PID stored in `~/.dsh/profiles/web/.dsh-web.pid`.
-  It never invokes `pkill` or `killall`.
+  It never invokes `pkill` or `killall`. The in-process doctor writes the
+  file at apply() with process.pid, and a stale entry is treated as
+  already-dead by the kill branch.
 - Sibling-file patch writes mean your real `cordis.patch.yml` is never
   silently mutated. Inspect / revert at any time.
 - If 60 s elapses without a healthy probe, the watchdog backs off and

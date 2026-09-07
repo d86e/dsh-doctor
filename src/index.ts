@@ -39,6 +39,7 @@ import {
   lastTickPath,
   readStartedAt,
   startedAtPath,
+  writeWebPid,
   type DoctorLogKind,
 } from './state.js'
 import { satisfiesCaret, TESTED_PEER_RANGE } from './version.js'
@@ -182,6 +183,17 @@ export function apply(ctx: Context, config: ConfigT): void {
     backups: config.logBackups,
   })
   const cfg = config
+
+  // The in-process doctor runs inside dsh web, so `process.pid` is dsh
+  // web's own pid. Persist it (fire-and-forget, cheap and idempotent) so
+  // the standalone daemon's EADDRINUSE kill-pid-and-restart branch has a
+  // real pid to signal. readWebPid treats a dead pid as already
+  // terminated — exactly the "dsh web crashed, its pid file is left
+  // behind" case that branch exists for. Without this, the file is never
+  // written and the v0.2.28 kill branch is dead code.
+  void writeWebPid(process.pid).catch((e) => {
+    void log.warn(`writeWebPid failed: ${(e as Error).message}`)
+  })
 
   // Wire tool error capture (degrades silently if the host does not expose
   // the tools/* event waterfalls).

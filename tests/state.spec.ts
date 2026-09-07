@@ -10,6 +10,7 @@ import {
   tailFile,
   pidAlive,
   readWebPid,
+  writeWebPid,
   readLastTickAt,
   lastTickPath,
   logPath,
@@ -85,6 +86,20 @@ describe('state helpers', () => {
     await fs.mkdir(path.dirname(p), { recursive: true })
     await fs.writeFile(p, '1234\n')
     expect(await readWebPid()).toBe(1234)
+  })
+
+  it('writeWebPid is the daemon kill branch source: round-trips to readWebPid', async () => {
+    // The daemon's kill-pid-and-restart branch (and the two spots in the
+    // README that promise "the watchdog only kills the PID it reads
+    // from .dsh-web.pid") both depend on this file. It had no writer
+    // until v0.2.31 — writeWebPid is what the in-process doctor calls
+    // with process.pid. Prove the write side exists and round-trips.
+    expect(await readWebPid()).toBeNull()
+    await writeWebPid(4321)
+    expect(await readWebPid()).toBe(4321)
+    // Idempotent overwrite (the same dsh web boot re-applies).
+    await writeWebPid(4321)
+    expect(await readWebPid()).toBe(4321)
   })
 
   it('logPath maps each kind to the right doctor-managed file', () => {

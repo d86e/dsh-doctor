@@ -709,8 +709,14 @@ function triageAndDisable(elapsed) {
       // at least something changes and the platform service retries.
       log('WARN', 'kill-pid-and-restart: kill failed; falling back to safe-mode')
       activateSafeMode(CFG.safeModeBundles)
-    } else {
+    } else if (relaunchViaPlatform()) {
       log('INFO', 'kill-pid-and-restart: orphan pid killed; waiting for platform service to restart dsh web')
+    } else {
+      // No platform service watches this web (manual mode): without a
+      // relaunch the killed port-holder leaves the port empty and dsh
+      // web just stays down. startWeb() is the direct-spawn fallback.
+      const pid = startWeb()
+      log('INFO', 'kill-pid-and-restart: no platform service; spawned dsh web directly (pid=' + pid + ')')
     }
   } else if (plan.kind === 'notify-user') {
     // The doctor cannot fix this; the human must. Log loudly so it
