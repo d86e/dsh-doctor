@@ -6,6 +6,7 @@ import {
   WATCHDOG_STANDALONE_BODY,
 } from '../src/watchdog.standalone.js'
 import { PATTERNS } from '../src/triage.js'
+import { ConfigDefaults } from '../src/config.js'
 import { pluginVersion } from '../src/watchdog.js'
 
 describe('watchdog standalone body', () => {
@@ -353,6 +354,35 @@ describe('generated script', () => {
     for (const id of iById.keys()) {
       expect(wById.get(id), `in-process-only pattern '${id}' (watchdog cannot recover it)`).toBeDefined()
     }
+  })
+
+  it('standalone CFG defaults match src/config.ts Defaults (shared knobs, drift-guard)', () => {
+    // Second drift surface found the same way as the PATTERNS one: the
+    // generated daemon keeps its own copy of the shared config defaults.
+    // The plugin's install step writes the FULLY-RESOLVED config (it
+    // always includes Defaults.* — see the resolveConfig +
+    // writeFileAtomic(StatePaths.configJson()) step), so the literal in
+    // this file is only the no-config.json fallback. Still, a stale
+    // literal is misleading: the source says one thing, the runtime
+    // does another. Pin the shared knobs.
+    // eslint-disable-next-line no-new-func
+    const sandbox = new Function('module', 'exports', 'require', WATCHDOG_STANDALONE_BODY + '\nreturn JSON.parse(JSON.stringify(CFG))')
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const bodyCfg = sandbox({}, {}, require) as Record<string, unknown>
+
+    const shared: Array<[keyof typeof ConfigDefaults]> = [
+      'healthIntervalMs',
+      'healthFailuresToRecover',
+      'recoveryBudgetMs',
+      'triageLogLines',
+    ]
+    for (const key of shared) {
+      expect(bodyCfg[key], `standalone CFG.${key} drifted`).toBe(ConfigDefaults[key])
+    }
+    expect(
+      JSON.stringify(bodyCfg.safeModeBundles),
+      'standalone CFG.safeModeBundles drifted',
+    ).toBe(JSON.stringify(ConfigDefaults.safeModeBundles))
   })
 
   it('singleInstance stamps the start marker that status uses for uptime', async () => {

@@ -5,6 +5,37 @@ All notable changes to `@d86e/dsh-doctor` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.26] — 2026-09-07
+
+### Fixed — dead default: the daemon source said 30 s, the runtime probed every 2 s
+
+The generated watchdog's `CFG` literal had `healthIntervalMs: 30000` while
+the plugin's `Defaults.healthIntervalMs` is `2_000`. Because `dsh_doctor_install`
+always writes the **fully-resolved** config (Defaults included) to
+`config.json` and the daemon's `loadConfig` does `Object.assign(CFG, parsed)`,
+the `30000` never took effect in a real installation — the source file
+contradicted the running system by 15×. Anyone reading the generated
+script to predict daemon behavior got the wrong answer.
+
+- **`src/watchdog.standalone.ts`** — `healthIntervalMs` default is now
+  `2000` with a comment explaining that all four shared knobs must track
+  `src/config.ts` `Defaults`, and why (install always ships the resolved
+  config; the literal is only the no-config.json fallback).
+- **tests** — new drift-guard runs the cooked body's `CFG` and asserts
+  `healthIntervalMs`, `healthFailuresToRecover`, `recoveryBudgetMs`,
+  `triageLogLines` and `safeModeBundles` all equal
+  `ConfigDefaults` from `src/config.js`. This was the first of the two
+  triage/config drifts found this week; the guard makes the second
+  one a CI failure instead of a field report.
+
+### Why
+
+Two files declaring defaults for the same runtime is a ticking clock;
+the only question is whether the drift shows up in production (this
+time it was masked by install-overwriting) or the next day in a support
+ticket ("why does watchdog.js say 30000?"). Pinning them in the suite
+closes the loop.
+
 ## [0.2.25] — 2026-09-07
 
 ### Added — drift-guard between the two triage pattern tables
