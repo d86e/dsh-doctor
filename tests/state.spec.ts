@@ -10,6 +10,8 @@ import {
   tailFile,
   pidAlive,
   readWebPid,
+  readLastTickAt,
+  lastTickPath,
   logPath,
   StatePaths,
 } from '../src/state.js'
@@ -90,5 +92,22 @@ describe('state helpers', () => {
     expect(logPath('watchdog')).toBe(StatePaths.watchdogLog())
     expect(logPath('doctor')).toBe(StatePaths.doctorLog())
     expect(logPath('tool-errors')).toBe(path.join(tmpHome, 'doctor', 'logs', 'tool-errors.log'))
+  })
+
+  it('readLastTickAt returns null when the marker is missing', async () => {
+    expect(await readLastTickAt()).toBeNull()
+  })
+
+  it('readLastTickAt round-trips an epoch-ms stamp written by the watchdog', async () => {
+    await ensureDir(path.dirname(lastTickPath()))
+    const stamp = Date.now() - 42_000
+    await fs.writeFile(lastTickPath(), String(stamp) + '\n')
+    expect(await readLastTickAt()).toBe(stamp)
+  })
+
+  it('readLastTickAt ignores garbage contents', async () => {
+    await ensureDir(path.dirname(lastTickPath()))
+    await fs.writeFile(lastTickPath(), 'not-a-number\n')
+    expect(await readLastTickAt()).toBeNull()
   })
 })

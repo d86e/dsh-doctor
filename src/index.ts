@@ -35,6 +35,8 @@ import {
   pidAlive,
   writeFileAtomic,
   logPath,
+  readLastTickAt,
+  lastTickPath,
   type DoctorLogKind,
 } from './state.js'
 import { satisfiesCaret, TESTED_PEER_RANGE } from './version.js'
@@ -349,6 +351,7 @@ export function apply(ctx: Context, config: ConfigT): void {
           StatePaths.lastKnownGood(),
           StatePaths.safeModePatch(),
           StatePaths.watchdogScript(),
+          lastTickPath(),
         ]) {
           try {
             await fs.unlink(f)
@@ -415,11 +418,14 @@ export function apply(ctx: Context, config: ConfigT): void {
         const recent = await readRecentRecoveries(5)
         const safeMode = await isSafeModeActive()
         const paused = (await readFileOrNull(StatePaths.stoppedMarker())) !== null
+        const lastTickAt = await readLastTickAt().catch(() => null)
         return {
           installed,
           running,
           pid,
           uptime,
+          lastTickAt,
+          lastTickAgeSec: lastTickAt !== null ? Math.round((Date.now() - lastTickAt) / 1000) : null,
           platform: currentPlatform(),
           webPort: Number(process.env.DSH_WEB_PORT) || 3080,
           paused,

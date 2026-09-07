@@ -143,3 +143,16 @@ export function logPath(kind: DoctorLogKind): string {
     case 'tool-errors': return path.join(doctorBase(), 'doctor', 'logs', 'tool-errors.log')
   }
 }
+
+/** Read the watchdog's last-tick timestamp (epoch ms), or `null`. */
+export async function readLastTickAt(): Promise<number | null> {
+  const raw = await readFileOrNull(path.join(doctorBase(), 'doctor', '.doctor-last-tick'))
+  if (raw === null) return null
+  const n = Number(raw.trim())
+  return Number.isFinite(n) && n > 0 ? n : null
+}
+
+/** Absolute path to the watchdog's last-tick marker. */
+export function lastTickPath(): string {
+  return path.join(doctorBase(), 'doctor', '.doctor-last-tick')
+}

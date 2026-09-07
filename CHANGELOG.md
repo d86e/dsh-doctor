@@ -5,6 +5,44 @@ All notable changes to `@d86e/dsh-doctor` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.20] — 2026-08-30
+
+### Added — watchdog liveness timestamp in `dsh_doctor_status`
+
+- **`src/watchdog.standalone.ts`** — the tick loop now stamps
+  `$DSH_HOME/doctor/.doctor-last-tick` (epoch ms) on every successful
+  tick, and `cleanup()` removes it on exit. A live pid alone is not
+  proof the watchdog is actually ticking — a wedged loop (the v0.2.6
+  class of bug) still owns a pid. The timestamp is.
+- **`src/state.ts`** — `readLastTickAt()` + `lastTickPath()` helpers.
+- **`src/index.ts` (`dsh_doctor_status`)** — output now includes
+  `lastTickAt` (epoch ms or null) and `lastTickAgeSec` (seconds since
+  the last observed tick). An operator can now distinguish
+  "watchdog alive and healthy" from "watchdog alive but wedged" from
+  "watchdog dead" at a glance.
+- **`dsh_doctor_uninstall`** cleans up the new marker file.
+
+### Fixed — safe-mode sentinel could clobber the doctor plugin itself
+
+- **`src/safe-mode.ts` (`buildSafeModePatch`)** — when
+  `safeModeBundles` is an empty array, the sentinel row was emitted as
+  `id: dsh-doctor-safe-mode-sentinel, name: dsh-doctor`. Cordis resolves
+  a row by its `name`'s package identity, so that sentinel could silently
+  replace the *running* dsh-doctor plugin row while safe mode was
+  active — leaving the doctor blind to its own state. The sentinel now
+  uses its own distinct id and name.
+- **`tests/safe-mode.spec.ts`** — regression test asserting neither
+  `id:` nor `name:` in an empty-allow-list patch equals `dsh-doctor`.
+
+### Why
+
+Two "silent blindness" bugs found by reading the recovery paths end to
+end: one could leave the doctor wedged without a pid telling the truth
+(the fix makes status tell you), the other could remove the doctor from
+the composition while it was trying to save the composition (the fix
+gives the sentinel its own identity). Both had a unit of work: stamp a
+file, rename a yaml key — but both took real reading to find.
+
 ## [0.2.19] — 2026-08-30
 
 ### Added — `dsh_doctor_recent_log` tool

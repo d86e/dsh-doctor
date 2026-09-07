@@ -31,7 +31,12 @@ export function buildSafeModePatch(allowList: readonly string[]): string {
   const insertHeader = '- insert:'
   const rows = allowList.length > 0
     ? allowList.map((id) => `    - id: ${id}\n      name: ${id}\n      config: {safeMode: true}`)
-    : ['    - id: dsh-doctor-safe-mode-sentinel\n      name: dsh-doctor\n      config: {safeModeSentinel: true}']
+    // Empty allow-list sentinel: the previous version used `name: dsh-doctor`
+    // (the plugin's own id), which cordis treats as "this row IS the dsh-doctor
+    // plugin" — meaning our own plugin would be silently turned off when
+    // the patch is active. Use a distinct id + name so the patch is
+    // non-empty AND harmless to the plugin that wrote it.
+    : ['    - id: dsh-doctor-safe-mode-sentinel\n      name: dsh-doctor-safe-mode-sentinel\n      config: {safeModeSentinel: true}']
   return `${header}\n${insertHeader}\n${rows.join('\n')}\n`
 }
 

@@ -70,6 +70,17 @@ describe('watchdog standalone body', () => {
     expect(WATCHDOG_STANDALONE_BODY).toMatch(/\.finally\(\s*\(\)\s*=>\s*setTimeout\(run/)
   })
 
+  it('stamps the last-tick marker on every tick (for dsh_doctor_status liveness)', () => {
+    // The status tool reads `.doctor-last-tick` to answer "is the
+    // watchdog alive AND actually ticking?" — a live pid alone is not
+    // enough (a wedged watchdog still has a pid).
+    expect(WATCHDOG_STANDALONE_BODY).toMatch(/\.doctor-last-tick/)
+    expect(WATCHDOG_STANDALONE_BODY).toMatch(/fs\.writeFileSync\(LAST_TICK, String\(Date\.now\(\)\)\)/)
+    // And cleanup() removes it on exit so a stopped watchdog does not
+    // leave a stale liveness stamp behind.
+    expect(WATCHDOG_STANDALONE_BODY).toMatch(/fs\.unlinkSync\(LAST_TICK\)/)
+  })
+
   it('emits a heartbeat line every N ticks when healthy', () => {
     // Without the heartbeat, a healthy watchdog is invisible in the log
     // (it only writes on failure / recovery). The heartbeat makes the

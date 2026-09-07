@@ -34,6 +34,18 @@ describe('safe-mode', () => {
     expect(body).toContain('dsh-doctor-safe-mode-sentinel')
   })
 
+  it('sentinel row does NOT clobber the dsh-doctor plugin itself', () => {
+    // Regression: the previous sentinel used `name: dsh-doctor` which
+    // cordis resolves to the running plugin row, silently turning
+    // dsh-doctor off while safe mode was active. The fix uses a distinct
+    // id + name so the sentinel is harmless.
+    const body = buildSafeModePatch([])
+    // Both id and name must be the sentinel id — neither is `dsh-doctor`.
+    expect(body).not.toMatch(/name:\s*dsh-doctor\s*\n/m)
+    expect(body).toMatch(/id:\s*dsh-doctor-safe-mode-sentinel/)
+    expect(body).toMatch(/name:\s*dsh-doctor-safe-mode-sentinel/)
+  })
+
   it('applySafeModePatch writes the file under the doctor home', async () => {
     const p = await applySafeModePatch(['dsh-core', '@scope/dsh-x'])
     expect(p).toBe(StatePaths.safeModePatch())

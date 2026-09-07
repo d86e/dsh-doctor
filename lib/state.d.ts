@@ -56,4 +56,8 @@ export declare function readWebPid(): Promise<number | null>;
 export type DoctorLogKind = 'web' | 'watchdog' | 'doctor' | 'tool-errors';
 /** Map a log kind to its absolute path. */
 export declare function logPath(kind: DoctorLogKind): string;
+/** Read the watchdog's last-tick timestamp (epoch ms), or `null`. */
+export declare function readLastTickAt(): Promise<number | null>;
+/** Absolute path to the watchdog's last-tick marker. */
+export declare function lastTickPath(): string;
 //# sourceMappingURL=state.d.ts.map
