@@ -5,6 +5,7 @@ import * as path from 'node:path'
 import {
   WATCHDOG_STANDALONE_BODY,
 } from '../src/watchdog.standalone.js'
+import { PATTERNS } from '../src/triage.js'
 import { pluginVersion } from '../src/watchdog.js'
 
 describe('watchdog standalone body', () => {
@@ -306,6 +307,52 @@ describe('generated script', () => {
 
     // Missing file is an empty array, never a throw.
     expect(tailFileByLines(path.join(tmpHome, 'does-not-exist'), 10)).toEqual([])
+  })
+
+  it('inline PATTERNS table agrees with src/triage.ts on id, priority, and kind (drift-guard)', () => {
+    // The standalone watchdog carries a hand-kept COPY of src/triage.ts's
+    // PATTERNS. The copies have drifted at least three times historically
+    // (pnpm-peer regex, schema-parse extraction, plugin-export-missing
+    // form) and every drift shipped a subtly different recovery than the
+    // in-process diagnose tool. This guard extracts both tables and
+    // asserts per shared id: same priority and same action kind for a
+    // synthetic match ([id, capture]) — a kind-only comparison because
+    // the in-process build() also attaches reason/via metadata the
+    // standalone act() does not.
+    // eslint-disable-next-line no-new-func
+    const wStart = WATCHDOG_STANDALONE_BODY.indexOf('const PATTERNS')
+    // The slice must include the package-id helpers (guessPkg,
+    // guessPkgFromPath) because the act() callbacks reference them.
+    // End the slice at the start-marker comment that follows the
+    // helpers (present in the current body).
+    const helperEnd = WATCHDOG_STANDALONE_BODY.indexOf('return guessPkg(s)', WATCHDOG_STANDALONE_BODY.indexOf('function guessPkgFromPath'))
+    const wEnd = helperEnd >= 0 ? WATCHDOG_STANDALONE_BODY.indexOf('\n', WATCHDOG_STANDALONE_BODY.indexOf('}', helperEnd)) + 1 : WATCHDOG_STANDALONE_BODY.indexOf('function probe')
+    if (wStart < 0 || wEnd < 0 || wEnd < wStart) throw new Error('standalone PATTERNS section not found')
+    const modW = { exports: {} as Record<string, unknown> }
+    // eslint-disable-next-line no-new-func
+    new Function('module', 'exports', WATCHDOG_STANDALONE_BODY.slice(wStart, wEnd) + '\nmodule.exports = { PATTERNS };')(modW, modW.exports)
+    const wp = modW.exports.PATTERNS as Array<{ id: string; pri: number; act: (m: string[]) => { kind: string } }>
+
+    const ip = PATTERNS as ReadonlyArray<{ id: string; priority: number; build: (id: string | null) => { kind: string } }>
+    const iById = new Map(ip.map((p) => [p.id, p]))
+    const wById = new Map(wp.map((p) => [p.id, p]))
+    expect(wById.size, 'standalone table empty').toBeGreaterThan(0)
+
+    for (const [id, wpat] of wById) {
+      const ipat = iById.get(id)
+      expect(ipat, `standalone-only pattern '${id}' (add it to src/triage.ts or delete it)`).toBeDefined()
+      const fake = [id, 'somepkg'] // group1 = a package, so both paths resolve an id
+      const wkind = wpat.act(fake).kind
+      const ikind = ipat!.build('somepkg').kind
+      expect(wkind, `${id}: action kind drifted`).toBe(ikind)
+      expect(wpat.pri, `${id}: priority drifted`).toBe(ipat!.priority)
+    }
+    // Every in-process pattern must exist in the standalone copy too —
+    // a pattern that only the in-process tool can see is a watchdog that
+    // can never recover from that failure.
+    for (const id of iById.keys()) {
+      expect(wById.get(id), `in-process-only pattern '${id}' (watchdog cannot recover it)`).toBeDefined()
+    }
   })
 
   it('singleInstance stamps the start marker that status uses for uptime', async () => {

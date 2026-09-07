@@ -5,6 +5,37 @@ All notable changes to `@d86e/dsh-doctor` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.25] — 2026-09-07
+
+### Added — drift-guard between the two triage pattern tables
+
+`src/triage.ts` (in-process `dsh_doctor_diagnose`) and the inline
+`PATTERNS` table baked into `watchdog.standalone.ts` (the generated
+daemon script) are two hand-kept copies of the same decision table.
+They drifted at least three times this week — the pnpm-peer regex, the
+schema-parse id extraction, and the plugin-export-missing match form —
+and every drift silently shipped **two different recovery plays for
+the same incident** depending on whether the live plugin or the daemon
+was watching.
+
+New test runs the cooked watchdog body's own PATTERNS next to the
+in-process table and asserts, for every pattern:
+
+- the id exists in **both** tables (a pattern only one side can see
+  means that side cannot recover from that failure),
+- the **priority** is identical (the priority decides which pattern
+  wins when a log line matches several), and
+- the **action kind** is identical for a synthetic match (a `disable-row`
+  on one side and a `safe-mode` on the other is the worst possible
+  drift: two humans watching the same failure get told opposite things).
+
+### Why
+
+Two copies of a table maintained by humans will drift the moment a fix
+lands in one and not the other. A guard that runs on every push
+turns that moment from a field report ("why did my watchdog do X when
+diagnose said Y?") into a red CI run.
+
 ## [0.2.24] — 2026-09-07
 
 ### Fixed — `dsh_doctor_status.uptime` reported a real value at last
