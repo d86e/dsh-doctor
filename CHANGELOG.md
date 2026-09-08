@@ -5,6 +5,74 @@ All notable changes to `@d86e/dsh-doctor` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.35] — 2026-09-08
+
+### Fixed — daemon (LaunchAgent) could not find dsh: bare cp.spawn('dsh') ENOENTed
+
+v0.2.33/0.2.34 made the daemon relaunch dsh web in manual mode
+(startWeb), but the daemon runs as a launchd LaunchAgent whose default
+environment is the minimal PATH /usr/bin:/bin:/usr/sbin:/sbin — the
+user's shell additions (~/.local/bin, ~/.hermes) are never in it. So
+cp.spawn('dsh') from the daemon ENOENTed. Observed live on 09-08:
+"spawn dsh failed: spawn dsh ENOENT" logged three consecutive times
+(16:21 / 16:26 / 16:31 — the rate-limit's 5-minute window), while dsh
+sat installed at ~/.local/bin/dsh the whole time and the 0.2.34 ENOENT
+handler simply kept the daemon from crashing — the web never came back.
+This is the same hole CI found one step earlier (v0.2.34) but with a
+worse consequence: on CI it only failed the run; here it left the port
+empty for the duration of the outage.
+
+- src/watchdog.standalone.ts — new resolveDsh() resolves where dsh
+  actually lives WITHOUT trusting PATH:
+    1. DSH_BIN env (explicit override; a .js value is flagged isScript)
+    2. absolute JS entry of the @deepseek-ai/dsh package, probed across
+       the known global install locations (~/.local/lib, DSH_HOME's
+       node_modules, ~/.hermes/node/lib, ~/.npm-global, and every nvm
+       node version dir). Each candidate is cross-checked against its
+       package root's package.json (name === @deepseek-ai/dsh) so a
+       stale copy of lib/bin.js under the wrong package is rejected.
+    3. an absolute dsh on the daemon's own PATH, if present
+    4. bare 'dsh' (the pre-v0.2.35 behavior; the ENOENT handler in
+       startWeb catches the miss and logs it)
+  startWeb() then spawns the resolved target. A .js entry is spawned as
+  process.execPath <script> — the daemon's own node binary is always an
+  absolute path (it is how the daemon itself was started), so a
+  minimal-PATH LaunchAgent no longer needs to resolve anything by name.
+
+- src/index.ts — looksLikeDshWeb() now also accepts the
+  node <pkg>/lib/bin.js web launch shape, because that is exactly how
+  the daemon's v0.2.35 startWeb() spawns dsh web. Previously such a
+  spawn's pid was not written to .dsh-web.pid (the guard only accepted
+  argv[1] basename dsh/dsh.js/dsh.cmd/dsh.exe), so a daemon-spawned web
+  would have had no recorded pid for a future kill-or-restart. The new
+  rule requires the path to be a bin.js inside a @deepseek-ai/dsh
+  node_modules segment, so the v0.2.31 clobber case (dsh plugin
+  --profile web add, argv[2]=plugin not web) does not reopen.
+
+- tests —
+    - tests/watchdog.spec.ts: new resolveDsh regression (bare PATH +
+      a HOME that does not actually contain dsh -> the bare-dsh
+      fallback with a non-empty cmd; on a host that DOES have dsh
+      globally, the resolved .js must exist and be flagged isScript;
+      DSH_BIN .js vs .exe overrides).
+    - the two triage-tail spawn tests now POLL the stub's marker file
+      instead of a fixed sleep. Under CI load the fire-and-forget
+      manual relaunch probes a dead port (~2 s) before the stub child
+      even gets spawned, so a 300 ms wait races its first line.
+
+### Why
+
+"the other side of the contract was never exercised" family, round 5:
+v0.2.30 (the boot budget), v0.2.31 (the writer), v0.2.32 (the
+clobberer), v0.2.33 (the relaunch), v0.2.34 (the ENOENT handler) —
+and now the PATH. cp.spawn('name') from a launchd service has never
+been safe unless the name is a bare absolute path or the service is
+given the right environment. We chose to make the daemon find its own
+dsh instead of relying on the LaunchAgent's environment, because the
+dsh the operator actually uses is the one on THEIR shell's PATH (which
+is exactly ~/.local/bin/dsh here), not whatever /usr/bin/dsh happens
+to be — if there even is one.
+
 ## [0.2.34] — 2026-09-08
 
 ### Fixed — async spawn ENOENT escaped startWeb as an uncaught exception (v0.2.33 CI red)

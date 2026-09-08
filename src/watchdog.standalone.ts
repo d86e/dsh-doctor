@@ -399,12 +399,111 @@ function killWeb() {
   catch (e) { log('WARN', 'kill failed: ' + e.message); return false }
 }
 
+/**
+ * Resolve where dsh actually lives, without trusting PATH.
+ *
+ * The daemon runs as a launchd LaunchAgent whose default PATH is
+ * /usr/bin:/bin:/usr/sbin:/sbin — the user's shell additions
+ * (~/.local/bin, ~/.hermes/node/bin, the dsh install location) are
+ * never in it. A bare cp.spawn('dsh') from the daemon therefore ENOENTs
+ * (observed live three consecutive times on 09-08: 16:21, 16:26,
+ * 16:31 — "spawn dsh failed: spawn dsh ENOENT" while dsh web sat
+ * installed at ~/.local/bin/dsh the whole time).
+ *
+ * Resolution order:
+ *   1. DSH_BIN env (explicit override, also what tests inject)
+ *   2. the absolute JS entry of the dsh package, found by probing the
+ *      known global install locations for lib/bin.js and checking the
+ *      sibling package.json's bin mapping actually points at it.
+ *   3. bare 'dsh' on PATH (the pre-v0.2.35 behavior; the ENOENT handler
+ *      in startWeb catches the miss and the operator sees it in the log).
+ *
+ * Returns { cmd, isScript }: cmd is the executable to spawn, isScript
+ * marks that cmd is a .js file (startWeb will then spawn it via
+ * process.execPath — the daemon's own node binary, an absolute path
+ * that always exists).
+ */
+function resolveDsh() {
+  const env = process.env.DSH_BIN
+  if (env) {
+    if (/\.js$/i.test(env)) return { cmd: env, isScript: true, source: 'DSH_BIN env' }
+    return { cmd: env, isScript: false, source: 'DSH_BIN env' }
+  }
+  // Known global install locations for dsh (npm/pnpm/cnpm/pnpm-global,
+  // and the dsh-specific ~/.local/bin symlink target layout).
+  //
+  // NOTE: use process.env.HOME with an os.homedir() fallback, not
+  // os.homedir() alone: on darwin the two agree, but on linux CI the
+  // runner user's libuv home is /home/runner while a test (or a
+  // DSH_HOME-style override) points HOME elsewhere, and the probe
+  // silently misses. In the real daemon they are equal, so this only
+  // affects testability.
+  const home = process.env.HOME || (os.homedir ? os.homedir() : process.env.USERPROFILE) || ''
+  if (!home) return { cmd: 'dsh', isScript: false, source: 'fallback bare dsh' }
+  // nvm keeps one directory per node version — enumerate them explicitly
+  // (no shell glob available in the daemon).
+  const nvmNodeDir = path.join(home, '.nvm', 'versions', 'node')
+  let nvmVersions = []
+  try { nvmVersions = fs.readdirSync(nvmNodeDir) } catch (_) {}
+  for (const v of nvmVersions) {
+    const p = path.join(nvmNodeDir, v, 'lib', 'node_modules', '@deepseek-ai/dsh', 'lib', 'bin.js')
+    try {
+      if (fs.statSync(p).isFile()) return { cmd: p, isScript: true, source: 'nvm global install' }
+    } catch (_) {}
+  }
+  const candidates = [
+    home + '/.local/lib/node_modules/@deepseek-ai/dsh/lib/bin.js',
+    home + '/.dsh/node_modules/@deepseek-ai/dsh/lib/bin.js',
+    home + '/.hermes/node/lib/node_modules/@deepseek-ai/dsh/lib/bin.js',
+    home + '/.npm-global/lib/node_modules/@deepseek-ai/dsh/lib/bin.js',
+  ]
+  for (const c of candidates) {
+    try {
+      const st = fs.statSync(c)
+      if (st.isFile()) {
+        // Cross-check: sibling package.json must be @deepseek-ai/dsh —
+        // a stale copy of the file with the wrong package in front of it
+        // is worse than no dsh at all.
+        // c is .../dsh/lib/bin.js; its package.json sits two levels up
+        // (at .../dsh/package.json), not one (lib has no package.json
+        // of its own). dirname alone silently misses it.
+        let ok = true
+        try {
+          const pkg = JSON.parse(fs.readFileSync(path.join(path.dirname(c), '..', 'package.json'), 'utf8'))
+          ok = pkg.name === '@deepseek-ai/dsh'
+        } catch (_) { ok = false }
+        if (ok) return { cmd: c, isScript: true, source: 'global install location' }
+      }
+    } catch (_) {}
+  }
+  // Also accept an absolute bare dsh on the daemon PATH (LaunchAgent
+  // /usr/bin:/bin) if it happens to be there.
+  const pathDirs = (process.env.PATH || '').split(':')
+  for (const d of pathDirs) {
+    if (!d) continue
+    const p = path.join(d, 'dsh')
+    try {
+      if (fs.statSync(p).isFile()) return { cmd: p, isScript: false, source: 'PATH (daemon env)' }
+    } catch (_) {}
+  }
+  return { cmd: 'dsh', isScript: false, source: 'fallback bare dsh' }
+}
+
 function startWeb() {
-  const dsh = process.env.DSH_BIN || 'dsh'
+  const resolved = resolveDsh()
+  const dsh = resolved.cmd
   const args = ['web', '--port', String(WEB_PORT)]
   if (process.env.DSH_NO_OPEN === '1' || process.env.DSH_NO_OPEN === 'true') args.push('--no-open')
+  // A .js entry cannot be spawned on its own from a minimal-PATH
+  // LaunchAgent: the shebang /usr/bin/env node would itself ENOENT
+  // node. So pass the daemon's own node (process.execPath — an
+  // absolute path that is always valid inside the daemon) as the
+  // executable and the script as its first argument.
+  const spawnCmd = resolved.isScript ? process.execPath : dsh
+  const spawnArgs = resolved.isScript ? [dsh].concat(args) : args
+  log('INFO', 'startWeb: dsh=' + dsh + ' (' + resolved.source + ')')
   try {
-    const child = cp.spawn(dsh, args, {
+    const child = cp.spawn(spawnCmd, spawnArgs, {
       detached: true,
       stdio: ['ignore', fs.openSync(path.join(DOCTOR_DIR, 'logs', 'dsh-web.log'), 'a'), fs.openSync(path.join(DOCTOR_DIR, 'logs', 'dsh-web.log'), 'a')],
       env: Object.assign({}, process.env, { DSH_HOME: DSH_HOME }),

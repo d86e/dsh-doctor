@@ -196,7 +196,19 @@ export function looksLikeDshWeb(argv: readonly string[] = process.argv): boolean
   // prefix, so only the base name is inspected.
   const prog = String(argv[1] ?? '')
   const base = (prog.match(/[^\\/]*$/) ?? [''])[0].toLowerCase()
-  return base === 'dsh' || base === 'dsh.js' || base === 'dsh.cmd' || base === 'dsh.exe'
+  if (base === 'dsh' || base === 'dsh.js' || base === 'dsh.cmd' || base === 'dsh.exe') return true
+  // dsh may also be launched by its absolute JS entry (the daemon's
+  // startWeb() does exactly this once it resolves dsh to .js — the
+  // dsh install is not on a LaunchAgent's minimal PATH, so the daemon
+  // spawns it as `<node> <dsh>/lib/bin.js web ...`). Such a launch IS
+  // the web server and must publish its pid. The dsh entry file is
+  // lib/bin.js inside the @deepseek-ai/dsh package, so accept any path
+  // whose basename is bin.js and that contains the package's own
+  // node_modules directory segment. (The v0.2.31 clobber bug came from
+  // `dsh plugin --profile web add` — argv[1] is dsh, argv[2] is
+  // `plugin` and NOT `web` — so this broader rule does not reopen it.)
+  if (base === 'bin.js' && /node_modules[\\/]+@deepseek-ai[\\/]+dsh[\\/]/.test(prog)) return true
+  return false
 }
 
 // ---------------------------------------------------------------------------

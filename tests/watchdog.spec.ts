@@ -563,18 +563,24 @@ describe('generated script', () => {
 
     triageAndDisable(1000) // elapsed 1s << 60s budget -> kind branch, not budget
 
-    // Give the SIGTERM a beat to land and the stub a beat to write its
-    // marker, then verify: the orphan is gone, NO safe-mode patch was
-    // staged (the v0.2.28 fallback, now reserved for failed kills), and
-    // the manual-mode relaunch actually spawned dsh web.
-    await new Promise((r) => setTimeout(r, 300))
+    // The manual-mode relaunch is fire-and-forget: it probes first
+    // (bounded by 2 s on a dead port) and then spawns the stub, which
+    // writes its marker a few ms later. Poll the marker instead of using
+    // a fixed sleep — under CI load a single 300 ms wait races the
+    // child's first line (v0.2.35 CI flake).
+    let marker = ''
+    const t0 = Date.now()
+    while (Date.now() - t0 < 5000) {
+      marker = await fs.readFile(spawnMarker, 'utf8').catch(() => '')
+      if (marker.includes('web args: web --port')) break
+      await new Promise((r) => setTimeout(r, 50))
+    }
     let orphanAlive = true
     try { process.kill(orphanPid, 0) } catch { orphanAlive = false }
     expect(orphanAlive, 'orphan web pid should have been SIGTERMed').toBe(false)
     const safePatch = path.join(tmpHome, 'doctor', 'safe-mode.patch.yml')
     const stat = await fs.stat(safePatch).catch(() => null)
     expect(stat, 'no safe-mode patch may be staged for a killed port conflict').toBeNull()
-    const marker = await fs.readFile(spawnMarker, 'utf8').catch(() => '')
     expect(marker, 'manual-mode relaunch must spawn dsh web').toContain('web args: web --port')
     delete process.env.DSH_BIN
     orphan.kill('SIGKILL')
@@ -713,10 +719,19 @@ describe('generated script', () => {
     expect(await fs.stat(safePatch).catch(() => null), 'safe-mode patch after budget').not.toBeNull()
     // The triage tail's manual relaunch must have spawned dsh web (via
     // the stub) — this is the 09-08 live bug: no platform service, no
-    // manual relaunch, 7 hours of empty port.
-    await new Promise<void>((r) => setTimeout(r, 300)) // let the fire-and-forget settle
-    const spawnLog = await fs.readFile(spawnMarker, 'utf8').catch(() => '')
-    expect(spawnLog, 'manual-mode relaunch must spawn dsh web after triage').toContain('web args: web --port')
+    // manual relaunch, 7 hours of empty port. The relaunch is
+    // fire-and-forget (it probes ~2 s on the dead port first, then the
+    // stub child writes its marker a few ms later), so poll the marker
+    // instead of sleeping a fixed amount.
+    let spawnLog = ''
+    const t0 = Date.now()
+    while (Date.now() - t0 < 6000) {
+      spawnLog = await fs.readFile(spawnMarker, 'utf8').catch(() => '')
+      if (spawnLog.includes('web args: web --port')) break
+      await new Promise<void>((r) => setTimeout(r, 50))
+    }
+    expect(spawnLog, 'manual-mode relaunch must spawn dsh web after triage')
+      .toContain('web args: web --port')
   })
 
   it('manualRelaunchIfAvailable: spawns dsh web in manual mode, dedupes while the spawn is alive', async () => {
@@ -813,6 +828,62 @@ describe('generated script', () => {
     expect(await fs.stat(lock).catch(() => null), 'LOCK cleared after spawn ENOENT').toBeNull()
     delete process.env.DSH_BIN
     delete process.env.DSH_NO_OPEN
+  })
+
+  it('resolveDsh: finds the real dsh entry without PATH (v0.2.35 live bug — LaunchAgent minimal PATH)', async () => {
+    // The daemon runs as a launchd LaunchAgent with PATH
+    // /usr/bin:/bin:/usr/sbin:/sbin; dsh lives at ~/.local/lib (not on
+    // that PATH), so startWeb's bare cp.spawn('dsh') ENOENTed three
+    // times in a row on 09-08 (16:21 / 16:26 / 16:31). resolveDsh must
+    // find the absolute JS entry and flag it so startWeb spawns it via
+    // process.execPath (the daemon's own node, always an absolute path).
+    // eslint-disable-next-line no-new-func
+    const sandbox = new Function('module', 'exports', 'require', WATCHDOG_STANDALONE_BODY + '\nreturn resolveDsh')
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const resolveDsh = sandbox({}, {}, require) as () => { cmd: string; isScript: boolean; source: string }
+
+    // On this host (and the dev machine that runs the suite) dsh is
+    // installed under the home dir, so the no-env resolution must land
+    // on an absolute .js entry (or, on a machine with no global install,
+    // on the bare-dsh fallback). It must never be an EMPTY cmd.
+    const savedHome = process.env.HOME
+    delete process.env.DSH_BIN
+    const r = resolveDsh()
+    expect(r.cmd, 'cmd must be non-empty').toBeTruthy()
+    if (/^\/.*\.js$/.test(r.cmd)) {
+      // If we resolved a script, the file must really exist and carry
+      // the right shebang, and isScript must be set so startWeb routes
+      // it through process.execPath.
+      expect(r.isScript, 'a .js entry must be flagged isScript').toBe(true)
+      const st = await fs.stat(r.cmd).catch(() => null)
+      expect(st, 'resolved script ' + r.cmd + ' must exist').not.toBeNull()
+      const head = (await fs.readFile(r.cmd, 'utf8')).slice(0, 40)
+      expect(head, 'resolved script must be the node dsh entry').toContain('node')
+    }
+
+    // DSH_BIN env override: an absolute .js is flagged isScript, a bare
+    // executable is not.
+    const jsBin = path.join(tmpHome, 'entry.js')
+    await fs.writeFile(jsBin, '#!/usr/bin/env node\n')
+    process.env.DSH_BIN = jsBin
+    const rJs = resolveDsh()
+    expect(rJs).toEqual({ cmd: jsBin, isScript: true, source: 'DSH_BIN env' })
+    const rawBin = path.join(tmpHome, 'dsh-raw')
+    await fs.writeFile(rawBin, '#!/bin/sh\n')
+    process.env.DSH_BIN = rawBin
+    const rRaw = resolveDsh()
+    expect(rRaw).toEqual({ cmd: rawBin, isScript: false, source: 'DSH_BIN env' })
+    delete process.env.DSH_BIN
+
+    // A home with no global dsh install at all must fall back to the
+    // bare command rather than throw or return an empty cmd.
+    const emptyHome = await fs.mkdtemp(path.join(os.tmpdir(), 'dsh-doctor-nohome-'))
+    process.env.HOME = emptyHome
+    const rFb = resolveDsh()
+    expect(rFb.cmd, 'fallback must still be non-empty').toBeTruthy()
+    expect(rFb.isScript, 'fallback bare dsh is not a script').toBe(false)
+    process.env.HOME = savedHome
+    await fs.rm(emptyHome, { recursive: true, force: true })
   })
 
   it('singleInstance stamps the start marker that status uses for uptime', async () => {
