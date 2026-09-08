@@ -640,7 +640,12 @@ function removeRowFromPatch(lines, rowId) {
 
 function stageDisableRow(pluginId) {
   if (!pluginId) return false
-  const safe = String(pluginId).replace(/[^A-Za-z0-9_.\-@/]/g, '_')
+  // A scoped id (@scope/name) would make the marker a NESTED path
+  // (cordis.patch.yml.doctor-disabled-@scope/name — the subdirectory
+  // does not exist), so writeFileSync threw ENOENT and was silently
+  // caught: the very common scoped-plugin case never left a marker.
+  // Flatten the slash instead.
+  const safe = String(pluginId).replace(/[^A-Za-z0-9_.\-@]/g, '_')
   const target = PATCH_F + '.doctor-disabled-' + safe
   try {
     const raw = fs.readFileSync(PATCH_F, 'utf8')
@@ -714,6 +719,20 @@ let lastRecoveryAt = 0
 //     Now: at most one per 30 s.
 let lastBudgetWaitLineMs = 0
 let lastRateLimitedLineMs = 0
+// v0.2.37 demotion evidence: "alive but broken" means a listener IS on
+// the port — the web process is alive, the probe just did not get a 200
+// (a slow GC pause, a 2 s probe timeout under load, a stalled request).
+// Before v0.2.37, that ONE failure routed straight to triage, the log
+// tail usually showed no plugin error at all (no-match), and the
+// no-match fallback immediately wrote the safe-mode patch — demoting
+// the whole profile to dsh-core on hearsay. Live record: 261 safe-mode
+// patch writes in one 5 MB log rotation (09-06→09-08) and 70
+// "alive but broken" events, almost all of them ending in a no-match
+// demotion where the web was actually just slow for one probe.
+// Now: up to 3 restart-without-demotion inside a 2-minute episode; a
+// 4th failure with the log still showing no pattern IS the evidence.
+let noPatternRestarts = 0
+let noPatternEpisodeStart = 0
 // At most one "rate-limited" line per 30 s. The rate-limit window is
 // up to 5 minutes; before v0.2.36 the line printed on EVERY tick inside
 // it (150 lines per episode — observed live on 08-31, where it is the
@@ -753,6 +772,10 @@ async function tick() {
     }
     consecutiveFailures = 0
     firstFailureAt = 0
+    // A recovered probe ends the episode: the next alive-but-broken
+    // incident gets a fresh 3-restart evidence budget.
+    noPatternRestarts = 0
+    noPatternEpisodeStart = 0
     if (tickCount % HEARTBEAT_EVERY_N_TICKS === 0) {
       const uptimeSec = Math.round((Date.now() - installedAt) / 1000)
       log('INFO', 'health probe OK (heartbeat) uptime=' + uptimeSec + 's ticks=' + tickCount)
@@ -816,20 +839,34 @@ async function tick() {
   }
 
   // Port has a listener but health probe is failing → dsh web is
-  // alive but broken. 1 failure is enough — the user is staring at
-  // a stalled GUI; we don't make them wait 90s for a 3-failure
-  // threshold.
+  // alive but broken. The process is ALIVE (unlike an empty port): a
+  // single probe miss is more often a slow web (a GC pause, a stalled
+  // request, the 2 s probe timing out under load) than a broken
+  // profile, so give it a grace window before the first triage — the
+  // same shape as the empty-port boot budget, tuned for the case where
+  // something is (partially) serving. Observed live (09-07): one
+  // probe miss triaged the tail, found no pattern, and demoted the
+  // entire profile to safe-mode while the web was merely slow.
+  const BROKEN_GRACE_MS = (function () {
+    const v = Number(process.env.DSH_DOCTOR_BROKEN_GRACE_MS)
+    return Number.isFinite(v) && v > 0 ? v : 15000
+  })()
   if (consecutiveFailures === 1) {
-    log('WARN', 'first probe failure with port listening — dsh web alive but broken; reading log for triage')
+    log('WARN', 'first probe failure with port listening — dsh web alive but broken; grace window started')
   }
   if (firstFailureAt === 0) firstFailureAt = Date.now()
   const elapsed2 = Date.now() - firstFailureAt
+  if (elapsed2 < BROKEN_GRACE_MS) {
+    // Inside the grace window: the first-failure line above is the only
+    // thing we say (the pre-v0.2.37 code triaged on tick one).
+    return
+  }
   if (recoveryAttempts >= 3 && (Date.now() - lastRecoveryAt) < 5 * 60 * 1000) {
     logRateLimited()
     return
   }
-  log('WARN', 'triaging dsh web failure now (no ' + CFG.healthFailuresToRecover + '-failure wait — user latency budget)')
-  return triageAndDisable(elapsed2)
+  log('WARN', 'triaging dsh web after ' + Math.round(elapsed2 / 1000) + 's alive-but-broken (no pattern in the log = restart without demotion)')
+  return triageAndDisable(elapsed2, true)
 }
 
 /**
@@ -874,7 +911,7 @@ async function manualRelaunchIfAvailable(reason) {
  * relaunch: the platform service when one is registered, or a direct
  * spawn in manual mode (see manualRelaunchIfAvailable).
  */
-function triageAndDisable(elapsed) {
+function triageAndDisable(elapsed, aliveBroken) {
   const webLog = path.join(DOCTOR_DIR, 'logs', 'dsh-web.log')
   // Streaming tail — see tailFileByLines above. Honours CFG.triageLogLines
   // so operators can widen / narrow the window without editing code.
@@ -882,6 +919,20 @@ function triageAndDisable(elapsed) {
   const lines = tailFileByLines(webLog, want)
   const plan = triage(lines)
   log('INFO', 'triage: matched=' + plan.matched + ' kind=' + plan.kind + (plan.id ? ' id=' + plan.id : ''))
+
+  const noPatternMatch = !plan.matched
+  // Demotion evidence gate (v0.2.37): a listener on the port means the
+  // web process is alive — a probe without a 200 is more often a slow
+  // web (GC, a stalled request, a 2 s probe under load) than a broken
+  // profile. With NO pattern in the log tail there is no evidence any
+  // plugin is at fault, so restarting without safe-mode is the cheaper
+  // hypothesis: if the web was merely slow, one restart clears it and
+  // the profile stays intact. The 3-restart limit is the evidence door:
+  // three no-pattern restarts inside 2 minutes without recovery is
+  // itself the reason to demote, and the budget branch (60 s) still
+  // demotes a genuinely stuck episode regardless of this gate.
+  const demotionDue = noPatternRestarts >= 3 ||
+    (noPatternEpisodeStart !== 0 && Date.now() - noPatternEpisodeStart >= 2 * 60 * 1000)
 
   if (elapsed > CFG.recoveryBudgetMs) {
     // Longest-drawn failure: the pattern matched (or nothing did) but
@@ -912,7 +963,28 @@ function triageAndDisable(elapsed) {
     log('WARN', 'cleanup action: ' + plan.reason)
     cleanupCorruptPatch()
   } else if (plan.kind === 'safe-mode') {
-    activateSafeMode(CFG.safeModeBundles)
+    if (aliveBroken && noPatternMatch && !demotionDue) {
+      // v0.2.37 demotion evidence gate: the listener is present, the
+      // web process is alive, and the log tail shows no pattern at all
+      // — no evidence any plugin is at fault. Restart WITHOUT demoting:
+      // if the web was merely slow (a GC pause, a stalled request, a
+      // probe under load), one restart clears it and every plugin in
+      // the profile stays mounted. The budget branch above (60 s) and
+      // the 3-restart door both remain as the escalation paths when the
+      // restart hypothesis is wrong.
+      noPatternRestarts += 1
+      if (noPatternEpisodeStart === 0) noPatternEpisodeStart = Date.now()
+      log('WARN', 'alive-but-broken with no log pattern — restarting without safe-mode (evidence restart ' + noPatternRestarts + ' of 3 inside this episode)')
+      if (!killWeb()) {
+        // No recorded pid / kill failed: the restart cannot happen, so
+        // a demotion is the only remaining action (same fallback as the
+        // kill-pid-and-restart branch).
+        log('WARN', 'no-pattern restart: kill failed; falling back to safe-mode')
+        activateSafeMode(CFG.safeModeBundles)
+      }
+    } else {
+      activateSafeMode(CFG.safeModeBundles)
+    }
   } else if (plan.kind === 'disable-row' && plan.id) {
     stageDisableRow(plan.id)
   } else {

@@ -5,6 +5,61 @@ All notable changes to `@d86e/dsh-doctor` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.37] — 2026-09-08
+
+### Fixed — demotion storm: a single slow probe could demote the whole profile to safe-mode
+
+Live record from the previous log rotation (5 MB, 09-06→09-08): **261
+safe-mode patch writes** and 70 "alive but broken" events. The 09-07
+02:04 sample, line by line: a single probe miss (a listener WAS on the
+port — the web process was alive, the probe just did not get a 200)
+→ tail of dsh-web.log showed no pattern → triage's no-match fallback
+immediately wrote the safe-mode patch, demoting the whole profile to
+dsh-core on hearsay. The recovery branch had already said safe-mode
+stays until a human exits it — so a merely-slow web cost the operator
+a manual un-demotion.
+
+Root cause: the "alive but broken" branch triaged on the FIRST failure
+with no grace, and triage()'s no-match fallback (kind: safe-mode —
+the right conservative answer for an EMPTY port, where nothing is
+serving at all) was indistinguishable in that branch from a real
+plugin fault.
+
+Fixes (all existing features, newly wired):
+
+- **Grace window before the first alive-but-broken triage** (15 s,
+  DSH_DOCTOR_BROKEN_GRACE_MS overridable) — the same shape as the
+  empty-port boot budget (v0.2.30), tuned for a web that is
+  (partially) serving: a GC pause or a stalled request is more often
+  the cause of one probe miss than a broken profile.
+- **Evidence door for no-pattern demotions** (v0.2.37 core): when the
+  port has a listener AND the log tail matches NO pattern, the first
+  3 failures inside one episode restart WITHOUT demoting
+  (killWeb + the shared relaunch tail). The 4th no-pattern failure —
+  three restarts having actually failed to help — IS the evidence,
+  and demotes. The 60 s recovery budget still demotes a genuinely
+  stuck episode regardless.
+- A recovered probe resets the episode counters (a fresh incident
+  gets a fresh 3-restart evidence budget).
+
+### Also
+
+- **stageDisableRow: scoped package ids never left a marker.** The
+  id sanitize kept '/' so '@scope/name' became a NESTED path
+  (cordis.patch.yml.doctor-disabled-@scope/name — the subdirectory
+  does not exist); writeFileSync threw ENOENT, caught and swallowed.
+  The very common scoped-plugin case now writes a flat marker.
+
+- **tests** — a new regression drives triageAndDisable(…, aliveBroken)
+  four times against a dead log tail: the first three must NOT stage
+  safe-mode (and the recorded web pid must be killed — the restart
+  really happened), the fourth MUST. A second fresh-body instance
+  proves a MATCHED pattern still demotes on the first failure (no
+  evidence gate for real errors). The full-body sandbox2 needed the
+  first instance's PID_F unlinked — singleInstance() would otherwise
+  read the test process's own alive pid and silently exit(0) the
+  suite green. Verified: without the fix the test is red.
+
 ## [0.2.36] — 2026-09-08
 
 ### Fixed — 1255 lines of WARN in ONE hour: the two throttle promises never landed

@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { promises as fs } from 'node:fs'
+import * as cp from 'node:child_process'
 import * as os from 'node:os'
 import * as path from 'node:path'
 import {
@@ -732,6 +733,129 @@ describe('generated script', () => {
     }
     expect(spawnLog, 'manual-mode relaunch must spawn dsh web after triage')
       .toContain('web args: web --port')
+  })
+
+  it('alive-but-broken with no pattern: restarts WITHOUT safe-mode 3x, then demotes (v0.2.37 demotion-storm fix)', async () => {
+    // Live record (09-07 .1 log): 70 "alive but broken" events, 261
+    // safe-mode patch writes in one 5 MB rotation. Each one was a
+    // single probe miss (a slow web), a log tail with no pattern, and
+    // an immediate demotion to dsh-core — the v0.2.31 "alive but
+    // broken: 1 failure is enough" path firing at full speed. Now: the
+    // first 3 no-pattern failures inside one episode restart without
+    // demoting (killWeb + the shared relaunch tail); only the 4th —
+    // or the 60 s budget — demotes, which is when three restarts have
+    // actually failed to help and the hearsay becomes evidence.
+    await fs.mkdir(path.join(tmpHome, 'doctor', 'logs'), { recursive: true })
+    await fs.writeFile(path.join(tmpHome, 'doctor', '.doctor-installed'), '{}')
+    // A dead dsh-web.log tail: nothing for triage() to match, so every
+    // triage returns the no-match safe-mode kind.
+    await fs.writeFile(path.join(tmpHome, 'doctor', 'logs', 'dsh-web.log'), 'listening on 127.0.0.1\n')
+    // A recorded, ALIVE pid so killWeb() actually kills it (the
+    // restart path, not the "kill failed → demote" fallback).
+    const orphan = cp.spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { detached: true, stdio: 'ignore' })
+    orphan.unref()
+    await new Promise((r) => setImmediate(r))
+    expect(orphan.pid).toBeGreaterThan(0)
+    await fs.mkdir(path.join(tmpHome, 'profiles', 'web'), { recursive: true })
+    await fs.writeFile(path.join(tmpHome, 'profiles', 'web', '.dsh-web.pid'), String(orphan.pid))
+    process.env.DSH_NO_OPEN = '1'
+    // The shared relaunch tail (manual mode here — no .doctor-web-label)
+    // will spawn DSH_BIN per no-pattern restart. Point it at a fast stub
+    // so four triage calls do not boot four real dsh web processes.
+    const stub = path.join(tmpHome, 'fake-dsh')
+    await fs.writeFile(stub, `#!/bin/sh\necho "web args: $@"\n`)
+    await fs.chmod(stub, 0o755)
+    process.env.DSH_BIN = stub
+    // eslint-disable-next-line no-new-func
+    const sandbox = new Function('module', 'exports', 'require',
+      WATCHDOG_STANDALONE_BODY + '\nreturn { triageAndDisable }')({}, {}, require) as {
+      triageAndDisable: (elapsed: number, aliveBroken?: boolean) => void
+    }
+
+    const safePatch = path.join(tmpHome, 'doctor', 'safe-mode.patch.yml')
+    const alive = async () => { try { process.kill(orphan.pid!, 0); return true } catch { return false } }
+
+    // Failures 1..3: the web was "alive but broken" (listener present),
+    // the log has no pattern → restart (kill) WITHOUT demoting.
+    for (let n = 1; n <= 3; n++) {
+      sandbox.triageAndDisable(1000, true)
+      // The kill is synchronous in the body (SIGTERM), but give it a
+      // moment to deliver + rearm the pid file the way the shared
+      // relaunch would (the test only cares the kill happened).
+      await new Promise((r) => setTimeout(r, 50))
+      expect(await fs.stat(safePatch).catch(() => null),
+        'evidence restart ' + n + ' must NOT stage safe-mode').toBeNull()
+      if (n === 3) {
+        // By the 3rd, the recorded pid must be dead (killWeb worked) —
+        // that IS the restart having been attempted.
+        expect(await alive(), 'recorded web pid should be killed by the no-pattern restart').toBe(false)
+      }
+    }
+    // Failure 4: three no-pattern restarts have not recovered it —
+    // NOW the hearsay is evidence; demote.
+    sandbox.triageAndDisable(1000, true)
+    expect(await fs.stat(safePatch).catch(() => null),
+      '4th no-pattern alive-but-broken failure must stage safe-mode (evidence door)')
+      .not.toBeNull()
+
+    // A MATCHED pattern still demotes on the first failure (a real
+    // error in the log is evidence from the start) — reset state via a
+    // fresh body instance so the counters start clean.
+    // The fresh instance is another FULL body: singleInstance() would
+    // read the first instance's PID_F (this test process's own pid —
+    // alive) and silently process.exit(0), swallowing the rest of the
+    // test in vitest as a green pass. Unlink it first.
+    await fs.unlink(path.join(tmpHome, 'doctor', '.doctor-watchdog.pid')).catch(() => {})
+    // eslint-disable-next-line no-new-func
+    const sandbox2 = new Function('module', 'exports', 'require',
+      WATCHDOG_STANDALONE_BODY + '\nreturn { triageAndDisable }')({}, {}, require) as {
+      triageAndDisable: (elapsed: number, aliveBroken?: boolean) => void
+    }
+    await fs.unlink(safePatch).catch(() => {})
+    // A matched pattern with an id goes straight to disable-row (no
+    // evidence gate — a real error in the log is evidence from
+    // failure #1). stageDisableRow needs the profile patch file to
+    // exist to prune a row; a minimal one makes the marker deterministic.
+    const patchFile = path.join(tmpHome, 'profiles', 'web', 'cordis.patch.yml')
+    await fs.writeFile(patchFile, '# minimal test patch\n')
+    await fs.writeFile(path.join(tmpHome, 'doctor', 'logs', 'dsh-web.log'),
+      'Error: Cannot find module \'@example/missing-plugin\'\n')
+    sandbox2.triageAndDisable(1000, true)
+    // A matched pattern writes a disable-row marker, NOT safe-mode —
+    // the point: it did NOT take the 3-restart evidence gate.
+    const rowMarkers = await fs.readdir(path.dirname(patchFile))
+    expect(rowMarkers.some((f) => f.includes('.doctor-disabled-')),
+      'matched pattern must stage a disable-row on the first failure (no evidence gate)').toBe(true)
+    expect(await fs.stat(safePatch).catch(() => null),
+      'a matched pattern should not have fallen through to safe-mode').toBeNull()
+
+    // Drain the fire-and-forget manual relaunches. Each triageAndDisable
+    // above ended in `void manualRelaunchIfAvailable('triage')`, which
+    // probes (a dead local port: fast), spawns the stub, writes the
+    // restart LOCK as its last own action — and the stub child appends
+    // its stdout to dsh-web.log through the fd the daemon opened at
+    // spawn time. Every one of those writes can land AFTER this test
+    // body returns, racing afterEach's rm -rf (ENOTEMPTY on a
+    // concurrent write). Wait until NEITHER file changes across one
+    // 150 ms quiet window (bounded at 3 s): stable mtimes mean every
+    // relaunch — daemon side AND stub side — has settled.
+    const lock = path.join(tmpHome, 'doctor', '.doctor-restart.lock')
+    const webLog = path.join(tmpHome, 'doctor', 'logs', 'dsh-web.log')
+    const mtimes = async () => {
+      const a = await fs.stat(lock).catch(() => null)
+      const b = await fs.stat(webLog).catch(() => null)
+      return String(a ? a.mtimeMs : 0) + '|' + String(b ? b.mtimeMs : 0)
+    }
+    const t0 = Date.now()
+    let prev = await mtimes()
+    for (;;) {
+      await new Promise<void>((r) => setTimeout(r, 150))
+      const cur = await mtimes()
+      if (cur === prev) break
+      prev = cur
+      if (Date.now() - t0 > 3000) break
+    }
+    delete process.env.DSH_BIN
   })
 
   it('log throttles: budget-wait ≤1 line per 5s, rate-limited ≤1 line per 30s (v0.2.36 live-noise regression)', async () => {
