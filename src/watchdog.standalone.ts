@@ -410,6 +410,30 @@ function startWeb() {
       env: Object.assign({}, process.env, { DSH_HOME: DSH_HOME }),
       cwd: DSH_HOME,
     })
+    // The spawn can also fail ASYNC: ENOENT (DSH_BIN not found on this
+    // machine — CI runners have no dsh on PATH; v0.2.33 caught this
+    // as an uncaught exception out of a fire-and-forget triage call)
+    // and an early crash (bad config, port gone). Both would otherwise
+    // be invisible in the daemon log, hiding in dsh-web.log where an
+    // operator is less likely to be looking.
+    child.on('error', function (e) {
+      log('ERROR', 'spawn ' + dsh + ' failed: ' + (e && e.message ? e.message : String(e)))
+      // Clear the restart lock if it records THIS spawn: an ENOENT spawn
+      // has no usable pid, so manualRelaunchIfAvailable wrote an empty
+      // lock — treat both "empty" and "this pid" as ours, so a failed
+      // attempt cannot dedupe the next one.
+      let rec = null
+      try { rec = fs.readFileSync(LOCK, 'utf8').trim() } catch (_) {}
+      if (rec !== null && (rec === '' || rec === String(child.pid))) {
+        try { fs.unlinkSync(LOCK) } catch (_) {}
+      }
+    })
+    child.on('exit', function (code, sig) {
+      // A normal long-lived dsh web never exits on its own; a quick
+      // exit right after spawn is an early crash the operator should
+      // see in the daemon log, not just in dsh-web.log.
+      log('WARN', 'spawned dsh web pid=' + child.pid + ' exited code=' + code + ' sig=' + sig)
+    })
     child.unref()
     log('INFO', 'spawned dsh web pid=' + child.pid)
     return child.pid

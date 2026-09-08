@@ -588,6 +588,15 @@ describe('generated script', () => {
       path.join(tmpHome, 'doctor', 'logs', 'dsh-web.log'),
       'Error: listen EADDRINUSE: address already in use 0.0.0.0:3080\n',
     )
+    // The triage tail's manual-mode relaunch spawns dsh web directly
+    // (fire-and-forget after this synchronous call returns); stub DSH_BIN
+    // so the spawn target exists on every platform (CI runners have no
+    // `dsh` on PATH — v0.2.33 caught this as spawn dsh ENOENT).
+    const stub = path.join(tmpHome, 'fake-dsh')
+    await fs.writeFile(stub, `#!/bin/sh\necho "web args: $@"\n`)
+    await fs.chmod(stub, 0o755)
+    process.env.DSH_BIN = stub
+    process.env.DSH_NO_OPEN = '1'
     // eslint-disable-next-line no-new-func
     const sandbox = new Function('module', 'exports', 'require', WATCHDOG_STANDALONE_BODY + '\nreturn triageAndDisable')
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -596,6 +605,8 @@ describe('generated script', () => {
     const safePatch = path.join(tmpHome, 'doctor', 'safe-mode.patch.yml')
     const stat = await fs.stat(safePatch).catch(() => null)
     expect(stat, 'safe-mode patch must be staged when the kill has no target').not.toBeNull()
+    delete process.env.DSH_BIN
+    delete process.env.DSH_NO_OPEN
   })
 
   it('activateSafeMode rows match src/safe-mode.ts buildSafeModePatch byte-for-byte (drift-guard)', async () => {
@@ -764,6 +775,42 @@ describe('generated script', () => {
     await fn('test3')
     await waitFor(2)
     expect(await count(), 'third call re-spawns once the recorded spawn is dead').toBe(2)
+    delete process.env.DSH_BIN
+    delete process.env.DSH_NO_OPEN
+  })
+
+  it('startWeb: a missing DSH_BIN logs an async ENOENT instead of crashing the daemon (v0.2.33 CI regression)', async () => {
+    // v0.2.33 shipped with a fire-and-forget triage call that spawned
+    // dsh on a CI runner where dsh is not on PATH. The spawn ENOENT
+    // arrived ASYNC (child 'error' event) with no handler, so it leaked
+    // out as an uncaught exception that failed the whole run even with
+    // 154/154 tests green. With the error handler, the failure lands in
+    // watchdog.log and the LOCK is cleared so the next relaunch can try
+    // again.
+    void await fs.mkdir(path.join(tmpHome, 'doctor', 'logs'), { recursive: true })
+    await fs.writeFile(path.join(tmpHome, 'doctor', '.doctor-installed'), '{}')
+    const missingBin = path.join(tmpHome, 'definitely-not-a-binary-here')
+    process.env.DSH_BIN = missingBin
+    process.env.DSH_NO_OPEN = '1'
+    // eslint-disable-next-line no-new-func
+    const sandbox = new Function('module', 'exports', 'require', WATCHDOG_STANDALONE_BODY + '\nreturn manualRelaunchIfAvailable')
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const fn = sandbox({}, {}, require) as (reason: string) => Promise<void>
+    await fn('enoent-test')
+    // The ENOENT 'error' event is async — poll the daemon log for it.
+    const wd = path.join(tmpHome, 'doctor', 'logs', 'watchdog.log')
+    const t0 = Date.now()
+    let txt = ''
+    while (Date.now() - t0 < 3000) {
+      txt = await fs.readFile(wd, 'utf8').catch(() => '')
+      if (/spawn .*failed:/.test(txt)) break
+      await new Promise<void>((r) => setTimeout(r, 50))
+    }
+    expect(txt, 'ENOENT should land in the daemon log').toMatch(/spawn .*failed:.*ENOENT/)
+    // The LOCK recorded by the failed spawn must be cleared so the next
+    // manual relaunch attempt is not deduped against a dead pid.
+    const lock = path.join(tmpHome, 'doctor', '.doctor-restart.lock')
+    expect(await fs.stat(lock).catch(() => null), 'LOCK cleared after spawn ENOENT').toBeNull()
     delete process.env.DSH_BIN
     delete process.env.DSH_NO_OPEN
   })

@@ -5,6 +5,63 @@ All notable changes to `@d86e/dsh-doctor` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.34] — 2026-09-08
+
+### Fixed — async spawn ENOENT escaped startWeb as an uncaught exception (v0.2.33 CI red)
+
+v0.2.33's CI run failed even though all 154 tests passed: an
+"Unhandled Errors" section with one "Error: spawn dsh ENOENT" and no
+handler. The v0.2.33 triage tail relaunches dsh web on manual-mode
+hosts via a fire-and-forget "void manualRelaunchIfAvailable(...)"
+call. On a GitHub Actions ubuntu runner, "dsh" is not on PATH, so the
+CP.spawn call returns immediately, the ENOENT arrives a few ms later
+as a child "error" event, and with no handler on it Node escalates
+it to an uncaught exception. On a macOS host with dsh installed the
+spawn actually succeeds (or dsh web is already running and the probe
+short-circuits earlier), so the bug only surfaced on CI.
+
+- src/watchdog.standalone.ts — startWeb() now attaches two handlers
+  on the child:
+    - "error": logs "spawn <dsh> failed: <message>" to watchdog.log
+      (previously this class of failure only ever landed in
+      dsh-web.log, which an operator is less likely to be tiling)
+      and clears the LOCK file if it records this spawn. An ENOENT
+      spawn has no usable pid, so manualRelaunchIfAvailable wrote an
+      empty lock — the handler treats BOTH "empty" and "this pid" as
+      ours, so a failed attempt cannot dedupe the next one.
+    - "exit": logs a "spawned dsh web pid=<p> exited code=<c> sig=<s>"
+      line. A well-behaved dsh web never exits on its own; a quick
+      exit right after spawn is an early crash the operator should
+      see in the daemon log, not buried in dsh-web.log.
+- The two new handlers are plain JS closures over dsh, child,
+  child.pid and LOCK — no new dependencies, no new feature; they just
+  stop the existing child-process spawn from throwing asynchronously
+  into the void (and, for the ENOENT case, undo the side-effect of
+  the restart lock that a doomed spawn left behind).
+- tests — tests/watchdog.spec.ts:
+    - new startWeb ENOENT regression: stubs DSH_BIN to a missing
+      path, calls manualRelaunchIfAvailable, polls the daemon log
+      until /spawn .*failed:.*ENOENT/ appears, then asserts the LOCK
+      is gone. This pins the "failure lands in watchdog.log, not an
+      uncaught exception" contract that v0.2.33's CI run violated.
+    - the EADDRINUSE-with-no-recorded-pid test now sets DSH_BIN to a
+      stub shell so its fire-and-forget relaunch does not try to
+      spawn a binary that may not exist on every platform (this was
+      also the CI surface of the ENOENT, but at the test level: on a
+      runner with no dsh, spawn fails async after the test has
+      already passed, surfacing as an unhandled error in the file).
+
+### Why
+
+This is the same "fire-and-forget promise with no error handling"
+family as a few earlier rounds, but the surface was new because the
+previous two spawn sites (kill-pid-and-restart in v0.2.31, and the
+triage-tail manual relaunch in v0.2.33) predated the ENOENT handler.
+A "spawn a binary that is not on PATH" used to be a visible failure
+only on the platform that actually ran it. On v0.2.33's CI
+(ubuntu-24.04, no dsh on PATH) it was a silent async kill of the
+whole test suite.
+
 ## [0.2.33] — 2026-09-08
 
 ### Fixed — manual-mode crashes left the port empty for 7 hours (observed 09-08)
