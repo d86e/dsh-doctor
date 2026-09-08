@@ -5,6 +5,73 @@ All notable changes to `@d86e/dsh-doctor` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.33] — 2026-09-08
+
+### Fixed — manual-mode crashes left the port empty for 7 hours (observed 09-08)
+
+Every triage branch ends with "waiting for the platform service to
+restart dsh web". In platform mode that is true. In manual mode there
+is no platform service — nothing is ever going to pull dsh web back.
+Observed live on 09-08: dsh web (pid 98431, up 18:15) died; the
+v0.2.30 daemon correctly staged safe-mode after the 30 s boot budget,
+logged the "triage action staged; waiting for platform service" line,
+and the port stayed empty for 7 hours (02:31 → 09:28 local) because the
+"platform service" that was supposed to relaunch dsh web was never
+there. Meanwhile the "port empty for Ns / probe X / entering
+crash-loop triage" line fired on every tick (observed ~12,460 probes)
+even when the recovery rate-limit was about to skip the triage.
+
+- src/watchdog.standalone.ts — new async manualRelaunchIfAvailable():
+  if relaunchViaPlatform() reports no registered service, call probe()
+  first (dsh web may have come back on its own, e.g. a human ran
+  dsh web by hand — don't stack a second spawn on top), then read the
+  LOCK file (the recorded pid of our last direct spawn, within a
+  5-minute window): if that spawn is still alive we are already
+  waiting on it, so skip; if it is dead (crash on startup) or absent,
+  call startWeb() and record the new pid back into LOCK (which also
+  becomes the first use of that constant — it was declared but
+  never written to or read).
+- The final tail of triageAndDisable (kill-pid fallback, notify-user,
+  cleanup-and-restart, safe-mode, disable-row, no-match) now calls
+  manualRelaunchIfAvailable after staging the fix, instead of always
+  logging "waiting for platform service"; in platform mode it still
+  logs the wait, in manual mode it spawns. The 09-08 7-hour window
+  corresponds exactly to this line + manual mode + the daemon's
+  triage kind = safe-mode + no-match.
+- src/watchdog.standalone.ts — the "entering crash-loop triage" log
+  line moved AFTER the recovery rate-limit check, so a tick that is
+  going to skip triage does not first log that it is "entering" it.
+  (Observed: the line at 09-08T01:27:51 → 01:28:13 fired every 2 s
+  for 25 s straight, each tick about to be rate-limited right after.)
+
+- tests — tests/watchdog.spec.ts: new manualRelaunchIfAvailable
+  functional test (spawns a real child via a stubbed DSH_BIN as
+  sh sleep 4, asserts the first call spawns, the LOCK records the
+  alive pid, a second call dedupes while it is alive, SIGKILLs it,
+  the third call re-spawns). The boot-budget regression test now also
+  asserts the triage tail in manual mode actually spawned dsh web via
+  the DSH_BIN stub, not just that safe-mode was staged — which is the
+  specific regression that would have hidden the 09-08 bug (safe-mode
+  was staged; the relaunch was never exercised).
+- beforeEach cleanup: point DSH_WEB_PORT at a free throwaway port for
+  every full-body sandbox (so a triage's manual relaunch probe hits a
+  dead port, not the host's real 3080, and a test that forgets to
+  clean its own port does not race the live web).
+
+### Why
+
+This is the same "the other side of the contract was never
+exercised" family as v0.2.30 (the boot budget), v0.2.31 (the writer),
+and v0.2.32 (the clobberer), one round later with an even larger
+blast radius: the branch was right about everything except the
+assumption "something is going to restart dsh web for us after we
+hand it back". That is only true when a platform service owns dsh
+web's lifecycle, and this host has no such service loaded (the
+plist exists in ~/Library/LaunchAgents but is not in launchctl).
+The LOCK file becomes the daemon's own memory of "I already tried to
+relaunch and this is the pid I spawned", which is also the first real
+use of a constant that had sat unused since the script was written.
+
 ## [0.2.32] — 2026-09-08
 
 ### Fixed — v0.2.31's pid writer let a short-lived CLI process clobber the web's

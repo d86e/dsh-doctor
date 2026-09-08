@@ -180,10 +180,24 @@ describe('watchdog standalone body', () => {
 describe('generated script', () => {
   let tmpHome: string
   let savedMaxListeners: number
+  let freeTestPort = 0
 
   beforeEach(async () => {
     tmpHome = await fs.mkdtemp(path.join(os.tmpdir(), 'dsh-doctor-test-'))
     process.env.DSH_HOME = tmpHome
+    // Point the body's probe at a free throwaway port, NOT the host's
+    // real 3080. Any full-body sandbox (boot-budget test, kill-branch
+    // test) runs the manual-mode relaunch's fire-and-forget probe; if
+    // 3080 is live it would resolve healthy (no spawn) and if it is
+    // down the probe would take 2 s each — and any test that forgets
+    // its own port cleanup would race the host.
+    const netMod = await import('node:net')
+    const l = netMod.createServer()
+    await new Promise<void>((r) => l.listen(0, '127.0.0.1', r))
+    const a = l.address()
+    freeTestPort = typeof a === 'object' && a !== null ? a.port : 0
+    await new Promise<void>((r) => l.close(() => r()))
+    process.env.DSH_WEB_PORT = String(freeTestPort)
     // Each run of the full body registers process-level SIGINT/SIGTERM/
     // SIGHUP handlers; without a listener budget the 10th sandbox in this
     // file emits MaxListenersExceededWarning. Raise the budget for the
@@ -192,7 +206,8 @@ describe('generated script', () => {
     process.setMaxListeners(100)
   })
   afterEach(async () => {
-    delete process.env.DSH_HOME
+    delete process.env.DSH_WEB_PORT
+    delete process.env.DSH_DOCTOR_BOOT_BUDGET_MS
     process.setMaxListeners(savedMaxListeners)
     await fs.rm(tmpHome, { recursive: true, force: true })
   })
@@ -642,33 +657,39 @@ describe('generated script', () => {
     // daemon staged safe-mode three times while the web was still
     // booting. Now the empty-port branch runs on ELAPSED TIME against
     // a boot budget, not a fixed probe count.
-    const netMod = await import('node:net')
-    const listener = netMod.createServer()
-    await new Promise<void>((r) => listener.listen(0, '127.0.0.1', r))
-    const addr = listener.address()
-    const port = typeof addr === 'object' && addr !== null ? addr.port : 0
-    await new Promise<void>((r) => listener.close(() => r()))
-    if (port === 0) throw new Error('no free port')
-    process.env.DSH_WEB_PORT = String(port)
-    // Pump the budget into ~1.5s wall instead of 30s so the suite stays
-    // fast. Without it the tight tick loop (~5ms/tick) exhausts its
-    // iteration cap long before the 30s budget elapses, so the test
-    // never reaches the "after budget" branch and silently passes.
+    // beforeEach points DSH_WEB_PORT at a free throwaway port (nothing
+    // listening = the empty-port path) so the body never probes the host's
+    // real 3080. Pump the budget into ~1.5s wall instead of 30s so the
+    // suite stays fast — without it the tight tick loop (~5ms/tick)
+    // exhausts its iteration cap long before the 30s budget elapses and
+    // the test never reaches the "after budget" branch.
+    expect(freeTestPort, 'free test port').toBeGreaterThan(0)
     process.env.DSH_DOCTOR_BOOT_BUDGET_MS = '1500'
 
     // tick() hard-exits if the install marker is missing — write it
     // first (same shape as dsh_doctor_install does).
     await fs.mkdir(path.join(tmpHome, 'doctor', 'logs'), { recursive: true })
     await fs.writeFile(path.join(tmpHome, 'doctor', '.doctor-installed'), '{}')
+    // Stub DSH_BIN so the manual-mode relaunch the triage tail now
+    // performs (there is no .doctor-web-label here) does not spawn a
+    // real dsh web. The stub records its invocation.
+    const stub = path.join(tmpHome, 'fake-dsh')
+    const spawnMarker = path.join(tmpHome, 'dsh-web-spawned.txt')
+    await fs.writeFile(stub, `#!/bin/sh\necho "web args: $@" >> ${JSON.stringify(spawnMarker)}\n`)
+    await fs.chmod(stub, 0o755)
+    process.env.DSH_BIN = stub
+    process.env.DSH_NO_OPEN = '1'
     // eslint-disable-next-line no-new-func
     const sandbox = new Function('module', 'exports', 'require', WATCHDOG_STANDALONE_BODY + '\nreturn { tick }')
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const api = sandbox({}, {}, require) as { tick: () => Promise<void> }
 
     const safePatch = path.join(tmpHome, 'doctor', 'safe-mode.patch.yml')
-    // A few ticks well inside the 1.5s budget must NOT stage anything.
+    // A few ticks well inside the 1.5s budget must NOT stage anything
+    // and must not relaunch yet either.
     for (let i = 0; i < 3; i++) await api.tick()
     expect(await fs.stat(safePatch).catch(() => null), 'no safe-mode patch inside budget').toBeNull()
+    expect(await fs.stat(spawnMarker).catch(() => null), 'no relaunch inside budget').toBeNull()
 
     // Once past the budget, an empty port is a crash: keep ticking
     // until the triage action lands (empty log, no pattern match ->
@@ -679,8 +700,72 @@ describe('generated script', () => {
       if ((await fs.stat(safePatch).catch(() => null)) !== null) break
     }
     expect(await fs.stat(safePatch).catch(() => null), 'safe-mode patch after budget').not.toBeNull()
-    delete process.env.DSH_WEB_PORT
-    delete process.env.DSH_DOCTOR_BOOT_BUDGET_MS
+    // The triage tail's manual relaunch must have spawned dsh web (via
+    // the stub) — this is the 09-08 live bug: no platform service, no
+    // manual relaunch, 7 hours of empty port.
+    await new Promise<void>((r) => setTimeout(r, 300)) // let the fire-and-forget settle
+    const spawnLog = await fs.readFile(spawnMarker, 'utf8').catch(() => '')
+    expect(spawnLog, 'manual-mode relaunch must spawn dsh web after triage').toContain('web args: web --port')
+  })
+
+  it('manualRelaunchIfAvailable: spawns dsh web in manual mode, dedupes while the spawn is alive', async () => {
+    // The 09-08 live window: dsh web crashed, no platform service,
+    // triage staged safe-mode and "waited for the platform service"
+    // forever, port empty for 7 hours. Now the relaunch tail spawns
+    // dsh web directly when no platform service is registered, and the
+    // LOCK pid bounds re-spawn attempts: while the recorded spawn is
+    // still alive the function skips (no duplicate into EADDRINUSE),
+    // and once it dies the function re-spawns.
+    void await fs.mkdir(path.join(tmpHome, 'doctor', 'logs'), { recursive: true })
+    await fs.writeFile(path.join(tmpHome, 'doctor', '.doctor-installed'), '{}')
+    // No .doctor-web-label -> relaunchViaPlatform() false -> manual mode.
+    // Stub DSH_BIN as a long-lived sh sleep so the recorded pid stays
+    // alive long enough to test the dedup-skip path.
+    const stub = path.join(tmpHome, 'fake-dsh')
+    const spawnMarker = path.join(tmpHome, 'dsh-web-spawned.txt')
+    await fs.writeFile(stub, `#!/bin/sh\necho "web args: $@" >> ${JSON.stringify(spawnMarker)}\nsleep 4\n`)
+    await fs.chmod(stub, 0o755)
+    process.env.DSH_BIN = stub
+    process.env.DSH_NO_OPEN = '1'
+    // eslint-disable-next-line no-new-func
+    const sandbox = new Function('module', 'exports', 'require', WATCHDOG_STANDALONE_BODY + '\nreturn manualRelaunchIfAvailable')
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const fn = sandbox({}, {}, require) as (reason: string) => Promise<void>
+
+    const count = async () => ((await fs.readFile(spawnMarker, 'utf8').catch(() => '')).match(/web args:/g) || []).length
+    // The spawn is async: the stub child runs its `echo` line a few ms
+    // after startWeb() returns, so poll the marker rather than reading
+    // once (a single read races the child's first line on slow CI).
+    const waitFor = async (n: number) => {
+      const t0 = Date.now()
+      while (Date.now() - t0 < 1500) {
+        if ((await count()) >= n) return
+        await new Promise<void>((r) => setTimeout(r, 50))
+      }
+    }
+
+    await fn('test1')
+    await waitFor(1)
+    expect(await count(), 'first call spawns').toBe(1)
+    // LOCK holds the spawned pid; it is alive (sh sleep 4). A second
+    // call inside the 5-minute window must skip (dedup), not re-spawn.
+    const lockPid = Number((await fs.readFile(path.join(tmpHome, 'doctor', '.doctor-restart.lock'), 'utf8')).trim())
+    expect(lockPid, 'LOCK records the spawned pid').toBeGreaterThan(0)
+    let lockAlive = true; try { process.kill(lockPid, 0) } catch { lockAlive = false }
+    expect(lockAlive, 'recorded spawn is alive during the dedup window').toBe(true)
+    await fn('test2')
+    // Brief settle: a dedup-skip logs and returns, no spawn; give it a
+    // beat so a (buggy) re-spawn would have time to land.
+    await new Promise<void>((r) => setTimeout(r, 200))
+    expect(await count(), 'second call dedupes while the spawn is alive').toBe(1)
+    // Let the stub die, then a third call must re-spawn.
+    try { process.kill(lockPid, 'SIGKILL') } catch { /* already gone */ }
+    await new Promise<void>((r) => setTimeout(r, 250))
+    await fn('test3')
+    await waitFor(2)
+    expect(await count(), 'third call re-spawns once the recorded spawn is dead').toBe(2)
+    delete process.env.DSH_BIN
+    delete process.env.DSH_NO_OPEN
   })
 
   it('singleInstance stamps the start marker that status uses for uptime', async () => {
