@@ -5,6 +5,48 @@ All notable changes to `@d86e/dsh-doctor` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.36] — 2026-09-08
+
+### Fixed — 1255 lines of WARN in ONE hour: the two throttle promises never landed
+
+The 08-31 episode (web down 02:31→09:28) left a forensic record in the
+daemon log: 1255 WARN lines in that single hour, ~half of the rolled
+5 MB file. Two lines accounted for the almost all, and both were
+supposed to be quiet already:
+
+1. "port still empty after Ns — within boot budget, waiting" (the
+   v0.2.30 boot-budget line) printed on ~4 of 5 ticks — the condition
+   tickCount % 5 !== 0 was inverted (the comment said "one line at 1/4
+   and 1/2 of the budget"; the code fired from 1/4 budget onward on
+   every non-multiple-of-5 tick). Live: it ran every 2 s from 10s to
+   26s+ of every boot-watch window.
+   Now: first line at 1/4 of the budget, then at most one per 5 s —
+   a 30 s budget yields at most ~5 lines instead of ~15.
+
+2. "recovery rate-limited — will retry next tick" printed on EVERY
+   tick for the whole 5-minute rate-limit window (up to 150 lines per
+   episode). It is the single most common line in the daemon log
+   (the 08-31 episode alone logged it ~900 times).
+   Now: at most one line per 30 s via the shared logRateLimited()
+   used at both call sites (empty-port branch and alive-but-broken
+   branch).
+
+### Why
+
+Same family as 0.2.33's "the rate limit log fired before the rate
+limit check": a condition whose intent was documented in a comment but
+whose implementation said something else. Neither line is a bug in
+the recovery logic (both windows behaved correctly); the cost is
+diagnostic — in a 5 MB rolling log, an operator cannot find the one
+line that explains the episode among two thousand copies of a line
+that explains nothing new.
+
+- tests — a new regression spins 100 back-to-back logRateLimited()
+  calls (must yield a single line) and pumps the 1.5 s test budget
+   hundreds of ticks (must yield ≤3 waiting lines, ≥1 to prove the
+   operator still sees the watchdog is waiting). Verified sensitive:
+   with the throttle disabled the test is red.
+
 ## [0.2.35] — 2026-09-08
 
 ### Fixed — daemon (LaunchAgent) could not find dsh: bare cp.spawn('dsh') ENOENTed

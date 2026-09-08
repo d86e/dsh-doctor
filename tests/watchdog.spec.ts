@@ -734,6 +734,49 @@ describe('generated script', () => {
       .toContain('web args: web --port')
   })
 
+  it('log throttles: budget-wait ≤1 line per 5s, rate-limited ≤1 line per 30s (v0.2.36 live-noise regression)', async () => {
+    // Observed live on 08-31: 1255 WARN lines in one hour — the
+    // "within boot budget, waiting" line every 2 s for the whole budget
+    // (its condition tickCount % 5 !== 0 was ~inverted) and
+    // "recovery rate-limited" on EVERY tick for up to 5 minutes (150
+    // lines/episode). With ~5 ms test ticks, the unthrottled versions
+    // emit HUNDREDS of lines in this test's window; the throttled code
+    // must stay in single digits.
+    await fs.mkdir(path.join(tmpHome, 'doctor', 'logs'), { recursive: true })
+    await fs.writeFile(path.join(tmpHome, 'doctor', '.doctor-installed'), '{}')
+    expect(freeTestPort, 'free test port').toBeGreaterThan(0)
+    process.env.DSH_DOCTOR_BOOT_BUDGET_MS = '1500'
+    const stub = path.join(tmpHome, 'fake-dsh')
+    await fs.writeFile(stub, `#!/bin/sh\necho "web args: $@"\n`)
+    await fs.chmod(stub, 0o755)
+    process.env.DSH_BIN = stub
+    // eslint-disable-next-line no-new-func
+    const sandbox = new Function('module', 'exports', 'require', WATCHDOG_STANDALONE_BODY + '\nreturn { tick, logRateLimited }')(
+      {}, {}, require,
+    ) as { tick: () => Promise<void>; logRateLimited: () => void }
+
+    // 100 back-to-back rate-limit calls in real (sub-second) time must
+    // yield a single line.
+    for (let i = 0; i < 100; i++) sandbox.logRateLimited()
+
+    // Let an empty port live through the 1.5 s budget (and a little
+    // after) without triaging — hundreds of ticks at ~5 ms each.
+    const start = Date.now()
+    while (Date.now() - start < 3000) {
+      await sandbox.tick()
+      const patch = await fs.stat(path.join(tmpHome, 'doctor', 'safe-mode.patch.yml')).catch(() => null)
+      if (patch !== null) break
+    }
+
+    const logTxt = await fs.readFile(path.join(tmpHome, 'doctor', 'logs', 'watchdog.log'), 'utf8').catch(() => '')
+    const budgetLines = (logTxt.match(/within boot budget/g) || []).length
+    const rateLines = (logTxt.match(/recovery rate-limited/g) || []).length
+    expect(rateLines, 'rate-limited lines in a <30s window: ' + logTxt.split('\n').length + ' log lines total').toBeLessThanOrEqual(3)
+    expect(budgetLines, 'budget-wait lines in a 1.5s budget').toBeGreaterThanOrEqual(1)
+    expect(budgetLines, 'budget-wait lines in a 1.5s budget must not spam').toBeLessThanOrEqual(3)
+    delete process.env.DSH_BIN
+  })
+
   it('manualRelaunchIfAvailable: spawns dsh web in manual mode, dedupes while the spawn is alive', async () => {
     // The 09-08 live window: dsh web crashed, no platform service,
     // triage staged safe-mode and "waited for the platform service"
